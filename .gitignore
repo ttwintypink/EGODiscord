@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+
+# Virtual env
+venv/
+env/
+.venv/
+.env/
+
+# Bot data
+database.db
+database.db-journal
+database.db-wal
+database.db-shm
+
+# Logs and transcripts (generated at runtime)
+transcripts/
+logs/
+*.log
+*.html
+*.txt
+!requirements.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keep config template tracked, but ignore real config with token
+# config.json — keep tracked (we use placeholder token)
