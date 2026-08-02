@@ -17,6 +17,15 @@ from pathlib import Path
 import discord
 from discord.ext import commands
 
+# Опционально поддерживаем python-dotenv для локальной разработки.
+# В проде (на хостинге) переменные обычно задаются через панель хостинга.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    _DOTENV_AVAILABLE = True
+except ImportError:
+    _DOTENV_AVAILABLE = False
+
 import database
 from cogs.ticket_control import (
     TicketControlView,
@@ -109,10 +118,39 @@ INITIAL_COGS = [
 ]
 
 
+def _resolve_token() -> str:
+    """
+    Возвращает токен бота.
+
+    Приоритет:
+        1. Переменная окружения DISCORD_TOKEN
+           (рекомендуется — задаётся через панель хостинга или .env файл).
+        2. config.json -> token (fallback, не рекомендуется для публичных репозиториев).
+    """
+    env_token = os.environ.get("DISCORD_TOKEN", "").strip()
+    if env_token:
+        log.info("Токен загружен из переменной окружения DISCORD_TOKEN.")
+        return env_token
+
+    cfg_token = (CONFIG.get("token") or "").strip()
+    if cfg_token and cfg_token != "ВСТАВЬ_ТОКЕН_БОТА":
+        log.warning("Токен загружен из config.json. Рекомендуется использовать "
+                    "переменную окружения DISCORD_TOKEN.")
+        return cfg_token
+
+    return ""
+
+
 async def main():
     # Инициализируем БД до старта бота
     await database.init_db()
     log.info("База данных инициализирована.")
+
+    if _DOTENV_AVAILABLE:
+        log.info("python-dotenv обнаружён — переменные из .env загружены.")
+    else:
+        log.info("python-dotenv не установлен. Используются переменные окружения "
+                 "только из системы/панели хостинга.")
 
     async with bot:
         for cog in INITIAL_COGS:
@@ -122,11 +160,16 @@ async def main():
             except Exception as e:
                 log.exception("Не удалось загрузить ког %s: %s", cog, e)
 
-        token = CONFIG.get("token", "")
-        if not token or token == "ВСТАВЬ_ТОКЕН_БОТА":
+        token = _resolve_token()
+        if not token:
             log.error("═══════════════════════════════════════════════════════════")
             log.error("  ТОКЕН БОТА НЕ НАСТРОЕН!")
-            log.error("  Откройте config.json и подставьте реальный токен в поле 'token'.")
+            log.error("  Способ 1 (рекомендуется): задайте переменную окружения")
+            log.error("                DISCORD_TOKEN через панель хостинга,")
+            log.error("                либо создайте файл .env со строкой:")
+            log.error("                DISCORD_TOKEN=ваш_токен_бота")
+            log.error("  Способ 2 (не рекомендуется): впишите токен в config.json")
+            log.error("                в поле 'token'.")
             log.error("═══════════════════════════════════════════════════════════")
             sys.exit(1)
 
