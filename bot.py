@@ -193,6 +193,7 @@ INITIAL_COGS = [
     "cogs.editor",
     "cogs.menu",
     "cogs.help",
+    "cogs.rules",
 ]
 
 
