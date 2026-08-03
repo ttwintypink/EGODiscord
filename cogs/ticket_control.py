@@ -21,12 +21,14 @@ from typing import Optional
 import discord
 from discord import ui, AllowedMentions
 from discord.ext import commands, tasks
+from datetime import datetime
 
 import database
 from utils import embeds
 from utils.embeds import (
     build_main, build_success, build_error, build_warning, build_info,
-    msk_timestamp, now_msk, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, COLOR_MAIN,
+    msk_timestamp, now_msk, MSK,
+    COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, COLOR_MAIN,
 )
 from utils.transcripts import generate_html_transcript, save_html, save_form_txt
 
@@ -792,10 +794,14 @@ async def _perform_close(interaction: discord.Interaction, config: dict,
 
     # 5. Собираем последние 5 сообщений для ЛС
     last_msgs = await database.message_get_last_n(channel.id, 5)
-    last_msgs_text = "\n\n".join(
-        f"**{m['author_name']}** ({msk_timestamp()}):\n{m['content'] or '—'}"
-        for m in last_msgs
-    ) if last_msgs else "Сообщений не найдено."
+    def _format_dm_msg(m) -> str:
+        try:
+            ts = datetime.fromtimestamp(int(m["created_at"]), tz=MSK).strftime("%d.%m.%Y %H:%M:%S МСК")
+        except (KeyError, ValueError, TypeError, OSError):
+            ts = msk_timestamp()  # fallback на текущее время
+        return f"**{m['author_name']}** ({ts}):\n{m['content'] or '—'}"
+
+    last_msgs_text = "\n\n".join(_format_dm_msg(m) for m in last_msgs) if last_msgs else "Сообщений не найдено."
 
     # 6. Отправляем кандидату в ЛС — премиум-embed
     dm_sent = False
@@ -888,8 +894,12 @@ async def _perform_close(interaction: discord.Interaction, config: dict,
                         role_color = f"#{role.color.value:06x}"
                         break
             try:
-                dt = discord.utils.snowflake_time(int(m["id"]))
-            except Exception:
+                # created_at в БД — это unix timestamp (секунды).
+                # Раньше тут было snowflake_time(int(m["id"])), но m["id"]
+                # это autoincrement-идентификатор из таблицы ticket_messages,
+                # а не Discord snowflake — поэтому возвращало январь 2015.
+                dt = datetime.fromtimestamp(int(m["created_at"]), tz=MSK)
+            except (KeyError, ValueError, TypeError, OSError):
                 dt = now_msk()
             created_str = dt.strftime("%d.%m.%Y %H:%M:%S МСК")
             messages_for_html.append({
@@ -1107,9 +1117,14 @@ async def _handle_rating(interaction: discord.Interaction, recruiter_id: int, st
             embed=rating_embed,
         )
     except discord.HTTPException:
-        # Если response уже отправлен — используем followup
+        # Если response ещё не отправлен (is_done == False) — используем
+        # send_message. followup.send требует, чтобы interaction был отвечен,
+        # иначе поднимет InteractionNotResponded.
         try:
-            await interaction.followup.send(embed=rating_embed, ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=rating_embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=rating_embed, ephemeral=True)
         except discord.HTTPException:
             pass
 
@@ -1140,6 +1155,13 @@ async def _restore_ticket(interaction: discord.Interaction, config: dict):
     отправляем туда анкету (из TXT-вложения в сообщении лога) —
     симулируем возврат.
     """
+    # Defer сразу — дальше много тяжёлых операций (парсинг HTML, create_channel,
+    # 3× send, БД). Без defer interaction протухнет через 3 сек.
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.HTTPException:
+        pass  # уже отвечен или протух — продолжаем, fallback ниже
+
     message = interaction.message
     guild = interaction.guild
 
@@ -1157,7 +1179,7 @@ async def _restore_ticket(interaction: discord.Interaction, config: dict):
                     pass
 
     if original_channel_id is None:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=build_error(description="Не удалось определить исходный тикет для восстановления."),
             ephemeral=True,
         )
@@ -1195,7 +1217,7 @@ async def _restore_ticket(interaction: discord.Interaction, config: dict):
             ticket_type = "mod"
 
     if user_id is None:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=build_error(description="Не удалось извлечь ID кандидата из транскрипта."),
             ephemeral=True,
         )
@@ -1206,7 +1228,7 @@ async def _restore_ticket(interaction: discord.Interaction, config: dict):
                    else config["category_mod_id"])
     category = guild.get_channel(category_id)
     if category is None or not isinstance(category, discord.CategoryChannel):
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=build_error(description="Категория для тикетов не найдена."),
             ephemeral=True,
         )
@@ -1247,7 +1269,7 @@ async def _restore_ticket(interaction: discord.Interaction, config: dict):
             reason=f"Восстановление тикета {original_channel_id}",
         )
     except discord.HTTPException as e:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=build_error(description=f"Ошибка создания канала: `{e}`"),
             ephemeral=True,
         )
@@ -1331,7 +1353,7 @@ async def _restore_ticket(interaction: discord.Interaction, config: dict):
         except discord.HTTPException:
             pass
 
-    await interaction.response.send_message(
+    await interaction.followup.send(
         embed=build_success(
             title="✅ Тикет восстановлен",
             description=f"Канал тикета создан: {new_channel.mention}",
@@ -1410,7 +1432,56 @@ class TicketControl(commands.Cog):
         channels = await database.fetch_user_active_ticket_channels(member.id)
         for ch_id in channels:
             channel = member.guild.get_channel(ch_id)
+
+            # Перед удалением канала — генерируем транскрипт и логируем закрытие,
+            # иначе вся переписка и анкета потеряются безвозвратно.
             if channel:
+                try:
+                    # Берём историю сообщений
+                    msgs = []
+                    async for m in channel.history(limit=200, oldest_first=True):
+                        msgs.append(m)
+                    # Сохраняем HTML-транскрипт
+                    try:
+                        html = generate_html_transcript(channel, msgs, member.guild)
+                        await save_html(html, ch_id)
+                    except Exception as e:
+                        log.warning("on_member_remove: не удалось сохранить транскрипт: %s", e)
+
+                    # Отправляем транскрипт в лог-канал
+                    config = _get_config(self.bot)
+                    log_ch_id = config.get("log_channel_id")
+                    if log_ch_id:
+                        log_ch = member.guild.get_channel(log_ch_id)
+                        if log_ch:
+                            import io
+                            import os
+                            html_path = f"transcripts/transcript_{ch_id}.html"
+                            if os.path.exists(html_path):
+                                try:
+                                    fp = discord.File(
+                                        html_path,
+                                        filename=f"transcript_{ch_id}.html",
+                                    )
+                                    leave_embed = discord.Embed(
+                                        title="👤 Пользователь покинул сервер — тикет закрыт",
+                                        description=(
+                                            f"## {member.mention} покинул сервер\n\n"
+                                            f"**Канал:** {channel.mention} (был)\n"
+                                            f"**ID пользователя:** `{member.id}`\n"
+                                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                            f"Ниже прикреплён HTML-транскрипт переписки."
+                                        ),
+                                        color=COLOR_WARNING,
+                                        timestamp=now_msk(),
+                                    )
+                                    leave_embed.set_footer(text="EGODiscord System • Auto-Close on Leave")
+                                    await log_ch.send(embed=leave_embed, file=fp)
+                                except discord.HTTPException as e:
+                                    log.warning("on_member_remove: не отправить транскрипт в лог: %s", e)
+                except Exception as e:
+                    log.exception("on_member_remove: ошибка генерации транскрипта: %s", e)
+
                 try:
                     await channel.delete(reason=f"Пользователь {member} покинул сервер")
                 except discord.HTTPException:
@@ -1608,55 +1679,60 @@ class TicketControl(commands.Cog):
             now = int(time.time())
             REMINDER_THRESHOLD = 30 * 60  # 30 минут
             for t in tickets:
-                # Если ещё не взят в работу
+                # Если уже взят в работу — пропускаем
                 if t.get("claimed_at"):
                     continue
                 created = t.get("created_at")
                 if created is None:
                     continue
                 delta = now - int(created)
-                # Напоминаем каждые ~30 минут, но не чаще раза в 30 минут
-                # Используем warned_inactive как флаг напоминания (многоразово — сбрасываем при claim)
-                if delta >= REMINDER_THRESHOLD:
-                    channel = self.bot.get_channel(t["channel_id"])
-                    if channel is None:
-                        continue
-                    config = _get_config(self.bot)
-                    ping_role_ids = (config.get("ping_roles_clan", []) if t["type"] == "clan"
-                                     else config.get("ping_roles_mod", []))
-                    ping_str = " ".join(f"<@&{rid}>" for rid in ping_role_ids) if ping_role_ids else ""
-                    # Если ролей для пинга нет — пингуем модераторов по умолчанию
-                    if not ping_str:
-                        roles_cfg = config.get("roles", {})
-                        ping_str = " ".join(
-                            f"<@&{rid}>" for key in ("moderator", "helper", "administrator")
-                            for rid in [roles_cfg.get(key)] if rid
-                        )
-                    try:
-                        reminder_embed = discord.Embed(
-                            title="⚠️ Заявка ожидает рассмотрения!",
-                            description=(
-                                f"## 🚨 Тикет без внимания более 30 минут\n\n"
-                                f"Кандидат <@{t['user_id']}> ждёт.\n"
-                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"👇 Нажмите кнопку **🤝 Взять в работу** в закрепе."
-                            ),
-                            color=COLOR_WARNING,
-                            timestamp=now_msk(),
-                        )
-                        reminder_embed.set_footer(text="EGODiscord System • Claim Reminder")
-                        await channel.send(
-                            content=ping_str or None,
-                            embed=reminder_embed,
-                            allowed_mentions=AllowedMentions(roles=True, users=False, everyone=False),
-                        )
-                    except discord.HTTPException as e:
-                        log.warning("Не удалось отправить напоминание: %s", e)
-                    # Чтобы не спамить, обновляем last_message_at (хотя бы фиктивно)
-                    # — нет, лучше отдельно хранить, но для упрощения:
-                    # Увеличиваем «created_at» путём записи last_message_at (не меняем created_at!)
-                    # Используем warned_inactive как временную метку последнего напоминания.
-                    # Здесь просто пропускаем, т.к. тикет останется в списке.
+                if delta < REMINDER_THRESHOLD:
+                    continue  # ещё рано
+
+                # Если уже отправляли напоминание (warned_inactive=1) — не спамим.
+                # Флаг сбрасывается в 0 при добавлении нового сообщения в тикет
+                # (database.message_add), а также при claim'е.
+                if t.get("warned_inactive"):
+                    continue
+
+                channel = self.bot.get_channel(t["channel_id"])
+                if channel is None:
+                    continue
+                config = _get_config(self.bot)
+                ping_role_ids = (config.get("ping_roles_clan", []) if t["type"] == "clan"
+                                 else config.get("ping_roles_mod", []))
+                ping_str = " ".join(f"<@&{rid}>" for rid in ping_role_ids) if ping_role_ids else ""
+                # Если ролей для пинга нет — пингуем модераторов по умолчанию
+                if not ping_str:
+                    roles_cfg = config.get("roles", {})
+                    ping_str = " ".join(
+                        f"<@&{rid}>" for key in ("moderator", "helper", "administrator")
+                        for rid in [roles_cfg.get(key)] if rid
+                    )
+                try:
+                    reminder_embed = discord.Embed(
+                        title="⚠️ Заявка ожидает рассмотрения!",
+                        description=(
+                            f"## 🚨 Тикет без внимания более 30 минут\n\n"
+                            f"Кандидат <@{t['user_id']}> ждёт.\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"👇 Нажмите кнопку **🤝 Взять в работу** в закрепе."
+                        ),
+                        color=COLOR_WARNING,
+                        timestamp=now_msk(),
+                    )
+                    reminder_embed.set_footer(text="EGODiscord System • Claim Reminder")
+                    await channel.send(
+                        content=ping_str or None,
+                        embed=reminder_embed,
+                        allowed_mentions=AllowedMentions(roles=True, users=False, everyone=False),
+                    )
+                    # Отмечаем, что напоминание отправлено — чтобы не спамить
+                    # каждые 10 минут. Сбросится, когда в тикете появится новое
+                    # сообщение (см. database.message_add → ticket_set_warned(False)).
+                    await database.ticket_set_warned(t["channel_id"], True)
+                except discord.HTTPException as e:
+                    log.warning("Не удалось отправить напоминание: %s", e)
         except Exception as e:
             log.exception("Ошибка в claim_reminder: %s", e)
 

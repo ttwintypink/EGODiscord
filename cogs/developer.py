@@ -191,27 +191,46 @@ class Developer(commands.Cog):
         from cogs.ticket_control import _create_voice_channel
         fake = _FakeInteraction(ctx.channel, ctx.author, ctx.guild, None)
 
-        # Обёртка: _create_voice_channel ожидает interaction.response.is_done()
+        # Обёртка: _create_voice_channel ожидает interaction с методами
+        # response.send_message / response.edit_message / response.is_done /
+        # followup.send / interaction.message.edit. Команда .voice вызывается
+        # из контекста commands.Context (а не из interaction), поэтому делаем
+        # адаптер, который редиректит все вызовы на ctx.channel.send.
         class _WrappedInteraction:
             def __init__(self, base):
                 self._base = base
                 self.channel = base.channel
                 self.user = base.user
                 self.guild = base.guild
-                self.message = base.message
+                # ctx.message существует всегда
+                self.message = getattr(base, "message", None)
 
                 class _Resp:
-                    done = False
+                    _done = False
                     async def send_message(self_inner, *args, **kwargs):
-                        self_inner.done = True
+                        self_inner._done = True
+                        # из ctx.channel.send возвращается Message — Discord.Message
+                        return await ctx.channel.send(*args, **kwargs)
+                    async def edit_message(self_inner, *args, **kwargs):
+                        # Если есть message — редактируем его; иначе шлём новое
+                        if self.message is not None:
+                            try:
+                                return await self.message.edit(*args, **kwargs)
+                            except discord.HTTPException:
+                                pass
                         return await ctx.channel.send(*args, **kwargs)
                     def is_done(self_inner):
-                        return self_inner.done
+                        return self_inner._done
 
                 self.response = _Resp()
 
-            async def followup_send(self, *args, **kwargs):
-                return await ctx.channel.send(*args, **kwargs)
+            class _Followup:
+                async def send(self_inner, *args, **kwargs):
+                    return await ctx.channel.send(*args, **kwargs)
+
+            @property
+            def followup(self):
+                return self._Followup()
 
         wrapped = _WrappedInteraction(fake)
         await _create_voice_channel(wrapped, config, ticket)

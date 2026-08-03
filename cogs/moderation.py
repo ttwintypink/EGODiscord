@@ -12,6 +12,7 @@ cogs/moderation.py — Команды администрации:
 from __future__ import annotations
 
 import logging
+from typing import Union
 
 import discord
 from discord.ext import commands
@@ -95,7 +96,7 @@ class Moderation(commands.Cog):
             pass
 
     @blacklist_grp.command(name="add")
-    async def blacklist_add(self, ctx: commands.Context, user: discord.User | int):
+    async def blacklist_add(self, ctx: commands.Context, user: Union[discord.User, int]):
         if not _is_admin(ctx.author, self._config()):
             await ctx.send(embed=embeds.error_no_permission())
             return

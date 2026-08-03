@@ -6,21 +6,13 @@
   "questions_clan": [
     {
       "title": "Ваше настоящее имя",
-      "subtitle": "Например: Александр (это будет в вашем нике на сервере)",
+      "subtitle": "Например: Александр",
       "max_length": 30,
       "min_length": 2,
       "multiline": false,
       "required": true,
-      "is_real_name": true
-    },
-    {
-      "title": "Ваш SteamID или ссылка на профиль Steam",
-      "subtitle": "7656119... или https://steamcommunity.com/id/...",
-      "max_length": 100,
-      "min_length": 5,
-      "multiline": false,
-      "required": true,
-      "is_steam": true
+      "is_real_name": true,
+      "is_steam": false
     },
     {
       "title": "Сколько вам лет",
@@ -28,7 +20,19 @@
       "max_length": 2,
       "min_length": 1,
       "multiline": false,
-      "required": true
+      "required": true,
+      "is_real_name": false,
+      "is_steam": false
+    },
+    {
+      "title": "Ваш SteamID или ссылка на профиль Steam",
+      "subtitle": "765611... или https://steamcommunity.com/id/...",
+      "max_length": 100,
+      "min_length": 5,
+      "multiline": false,
+      "required": true,
+      "is_real_name": false,
+      "is_steam": true
     },
     {
       "title": "Опыт игры в Rust",
@@ -36,7 +40,9 @@
       "max_length": 500,
       "min_length": 1,
       "multiline": true,
-      "required": true
+      "required": true,
+      "is_real_name": false,
+      "is_steam": false
     },
     {
       "title": "Почему хотите вступить в EGO",
@@ -44,7 +50,19 @@
       "max_length": 1000,
       "min_length": 10,
       "multiline": true,
-      "required": true
+      "required": true,
+      "is_real_name": false,
+      "is_steam": false
+    },
+    {
+      "title": "На какую роль вы хотите встать в клане?",
+      "subtitle": "Комбат | Билдер | Электрик | Фермер | Фармила",
+      "max_length": 500,
+      "min_length": 1,
+      "multiline": false,
+      "required": true,
+      "is_real_name": false,
+      "is_steam": false
     }
   ],
   "questions_mod": [
@@ -55,7 +73,18 @@
       "min_length": 2,
       "multiline": false,
       "required": true,
-      "is_real_name": true
+      "is_real_name": true,
+      "is_steam": false
+    },
+    {
+      "title": "Сколько вам лет",
+      "subtitle": "Напишите свой возраст (только число)",
+      "max_length": 2,
+      "min_length": 1,
+      "multiline": false,
+      "required": true,
+      "is_real_name": false,
+      "is_steam": false
     },
     {
       "title": "Ваш SteamID или ссылка на профиль Steam",
@@ -64,23 +93,8 @@
       "min_length": 5,
       "multiline": false,
       "required": true,
+      "is_real_name": false,
       "is_steam": true
-    },
-    {
-      "title": "Сколько вам лет",
-      "subtitle": "Напишите свой возраст (только число)",
-      "max_length": 2,
-      "min_length": 1,
-      "multiline": false,
-      "required": true
-    },
-    {
-      "title": "Почему хотите стать модератором",
-      "subtitle": "Расскажите о своём опыте и мотивации",
-      "max_length": 1000,
-      "min_length": 20,
-      "multiline": true,
-      "required": true
     },
     {
       "title": "Сколько времени готовы уделять модерации",
@@ -88,15 +102,37 @@
       "max_length": 200,
       "min_length": 3,
       "multiline": false,
-      "required": true
+      "required": true,
+      "is_real_name": false,
+      "is_steam": false
+    },
+    {
+      "title": "Почему хотите стать модератором",
+      "subtitle": "Расскажите о своём опыте и мотивации",
+      "max_length": 1000,
+      "min_length": 20,
+      "multiline": true,
+      "required": true,
+      "is_real_name": false,
+      "is_steam": false
     }
   ],
   "category_clan_id": 1533566111684235504,
   "category_mod_id": 1533566150015848588,
   "log_channel_id": 1533068805771628637,
   "accept_role_id": 1533070154349674526,
-  "ping_roles_clan": [],
-  "ping_roles_mod": [],
+  "ping_roles_clan": [
+    1533067469894189167,
+    1533560996772188211,
+    1533561098349973504,
+    1533561056872632431,
+    1533561141882523769
+  ],
+  "ping_roles_mod": [
+    1533067469894189167,
+    1533560996772188211,
+    1533561098349973504
+  ],
   "roles": {
     "leader": 1533067469894189167,
     "co_leader": 1533560996772188211,

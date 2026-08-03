@@ -212,7 +212,7 @@ def make_connector(
         kwargs["resolver"] = resolver
     
     connector = aiohttp.TCPConnector(**kwargs)
-    
+
     # Если задан SOCKS-прокси — оборачиваем в ProxyConnector.
     # Это позволяет использовать socks5://... прокси напрямую.
     proxy_url = get_proxy_url()
@@ -221,22 +221,36 @@ def make_connector(
         if socks_ok:
             try:
                 from aiohttp_socks import ProxyConnector
-                # ProxyConnector оборачивает существующий connector
+                # ProxyConnector создаёт свой внутренний коннектор,
+                # поэтому наш TCPConnector больше не нужен.
+                # make_connector — sync функция, поэтому не можем await
+                # connector.close(). Вместо этого планируем закрытие через
+                # loop callback —connector._close() это синхронная часть close.
                 socks_connector = ProxyConnector.from_url(proxy_url, **kwargs)
                 log.info("Connector: используется SOCKS-прокси через aiohttp-socks: %s",
                          _mask_proxy(proxy_url))
-                # Закрываем базовый TCPConnector — ProxyConnector создаст свой
-                # ВАЖНО: ProxyConnector — это Connector, не обёртка над TCPConnector,
-                # он сам создаёт внутренний коннектор. Закрываем наш.
-                # (на самом деле ProxyConnector не принимает существующий connector,
-                # так что просто возвращаем его)
+                try:
+                    # Создаём task на закрытие в event loop, если он запущен
+                    import asyncio
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            loop.create_task(connector.close())
+                        else:
+                            # loop не запущен — закрываем синхронно (небезопасно, но лучше чем утечка)
+                            loop.run_until_complete(connector.close())
+                    except RuntimeError:
+                        # нет event loop — забиваем, утечка минимальна (создаётся 1 раз при старте)
+                        pass
+                except Exception:
+                    pass
                 return socks_connector
             except Exception as e:
                 log.warning("Не удалось создать SOCKS ProxyConnector: %s — используем HTTP-прокси через env", e)
         else:
             log.warning("SOCKS-прокси задан, но aiohttp-socks не установлен: %s", socks_msg)
             log.warning("Установите: pip install aiohttp-socks")
-    
+
     return connector
 
 

@@ -235,6 +235,12 @@ class EditorDashboardView(ui.View):
                     value="panel_text",
                 ),
                 discord.SelectOption(
+                    label="Внешний вид панели",
+                    description="Заголовок, поля, эмодзи, лейблы опций, футер, иконка",
+                    emoji="🎨",
+                    value="panel_appearance",
+                ),
+                discord.SelectOption(
                     label="Steam API ключ",
                     description="Ключ для проверки VAC/часов в Rust",
                     emoji="🔑",
@@ -327,7 +333,10 @@ class EditorDashboardView(ui.View):
                 pass
 
     async def on_select(self, interaction: discord.Interaction):
-        value = interaction.data["values"][0]
+        try:
+            value = interaction.data["values"][0]
+        except (KeyError, IndexError, TypeError):
+            return
 
         if value == "q_clan":
             await self._open_questions_editor(interaction, "clan")
@@ -335,6 +344,14 @@ class EditorDashboardView(ui.View):
             await self._open_questions_editor(interaction, "mod")
         elif value == "panel_text":
             await interaction.response.send_modal(EditPanelTextModal(self.config, self))
+        elif value == "panel_appearance":
+            # Показываем подменю с 3 кнопками: тексты / опции / доп
+            view = PanelAppearanceMenuView(self.config, self)
+            await interaction.response.send_message(
+                embed=_panel_appearance_menu_embed(self.config),
+                view=view,
+                ephemeral=True,
+            )
         elif value == "steam_key":
             await interaction.response.send_modal(EditSteamKeyModal(self.config, self))
         elif value == "ping_roles":
@@ -567,15 +584,46 @@ class QuestionsEditorView(ui.View):
                 ))
 
         # Назад
-        options.append(discord.SelectOption(
+        back_option = discord.SelectOption(
             label="↩ Назад в главное меню",
             description="Вернуться к дашборду редактора",
             value="back",
-        ))
+        )
 
-        # Discord лимит — 25 опций в select. Если больше — берём первые 25
-        if len(options) > 25:
-            options = options[:25]
+        # Discord лимит — 25 опций в select.
+        # Резервируем последний слот под "Назад" — иначе при 25+ опциях
+        # кнопка "Назад" отсекается, и пользователь не может вернуться.
+        # Берём первые 24 action-опции + 1 back = 25 всего.
+        MAX_ACTION_OPTIONS = 24
+        if len(options) > MAX_ACTION_OPTIONS:
+            # Сохраняем приоритет: edit > add > del > up/down
+            # У edit (15) и del (15) — по 15 опций, у up/down — по 14.
+            # Если их слишком много, обрезаем edit/del/up/down пропорционально.
+            # Простейший вариант: edit+add без обрезки, остальное обрезаем.
+            edit_opts = [o for o in options if o.value.startswith("edit_")]
+            add_opts  = [o for o in options if o.value == "add"]
+            del_opts  = [o for o in options if o.value.startswith("del_")]
+            move_opts = [o for o in options if o.value.startswith(("up_", "down_"))]
+
+            # Оставляем как можно больше edit (самое важное), потом add, потом del, потом move
+            remaining = MAX_ACTION_OPTIONS - len(add_opts)  # add всегда включаем
+            if remaining < 0:
+                # Экстремальный случай: даже add не помещается
+                add_opts = add_opts[:MAX_ACTION_OPTIONS]
+                edit_opts, del_opts, move_opts = [], [], []
+            else:
+                if len(edit_opts) > remaining:
+                    edit_opts = edit_opts[:remaining]
+                remaining -= len(edit_opts)
+                if remaining > 0 and len(del_opts) > remaining:
+                    del_opts = del_opts[:remaining]
+                remaining -= len(del_opts)
+                if remaining > 0 and len(move_opts) > remaining:
+                    move_opts = move_opts[:remaining]
+
+            options = edit_opts + add_opts + del_opts + move_opts
+
+        options.append(back_option)
 
         select = ui.Select(
             placeholder="⚡ Выберите вопрос или действие...",
@@ -595,7 +643,10 @@ class QuestionsEditorView(ui.View):
                 pass
 
     async def on_select(self, interaction: discord.Interaction):
-        value = interaction.data["values"][0]
+        try:
+            value = interaction.data["values"][0]
+        except (KeyError, IndexError, TypeError):
+            return
 
         if value == "back":
             try:
@@ -962,6 +1013,370 @@ class EditPanelTextModal(ui.Modal):
             pass
 
 
+# ============================================================================
+# Внешний вид панели (заголовок, поля, опции dropdown, футер, иконка)
+# ============================================================================
+
+def _panel_appearance_menu_embed(config: dict) -> discord.Embed:
+    """Embed-меню выбора группы настроек внешнего вида панели."""
+    # Собираем краткий превью текущих значений
+    title = config.get("panel_title") or "_(по умолчанию)_"
+    clan_label = config.get("panel_clan_option_label") or "Набор в клан"
+    clan_emoji = config.get("panel_clan_option_emoji") or "🛡️"
+    mod_label = config.get("panel_mod_option_label") or "Набор в модерацию"
+    mod_emoji = config.get("panel_mod_option_emoji") or "👑"
+    placeholder = config.get("panel_select_placeholder") or "_(по умолчанию)_"
+    footer = config.get("panel_footer") or "_(по умолчанию)_"
+    thumb = config.get("panel_thumbnail_url") or "_(по умолчанию)_"
+
+    embed = discord.Embed(
+        title="🎨 Внешний вид панели",
+        description=(
+            "## Выберите группу настроек\n\n"
+            "Все поля необязательные — пустое значение = использовать дефолт.\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "### 📋 Текущие значения\n"
+            f"📝 **Заголовок:** {_truncate(title, 60)}\n"
+            f"🎫 **Placeholder:** {_truncate(placeholder, 60)}\n"
+            f"{clan_emoji} **Опция «Клан»:** {_truncate(clan_label, 40)}\n"
+            f"{mod_emoji} **Опция «Модерация»:** {_truncate(mod_label, 40)}\n"
+            f"👣 **Футер:** {_truncate(footer, 60)}\n"
+            f"🖼️ **Иконка:** {_truncate(thumb, 60)}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "### 👇 Нажмите кнопку ниже"
+        ),
+        color=COLOR_MAIN,
+        timestamp=embeds.now_msk(),
+    )
+    embed.set_footer(text="EGODiscord System • Panel Appearance")
+    return embed
+
+
+class PanelAppearanceMenuView(ui.View):
+    """Подменю с 3 кнопками для выбора группы настроек внешнего вида панели."""
+
+    def __init__(self, config: dict, parent_view: EditorDashboardView):
+        super().__init__(timeout=120)
+        self.config = config
+        self.parent_view = parent_view
+
+    @ui.button(label="Тексты (заголовок, поля)", emoji="📝",
+               style=discord.ButtonStyle.primary, custom_id="ego_panel_app_texts")
+    async def btn_texts(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(
+            EditPanelAppearanceModal(self.config, self.parent_view)
+        )
+
+    @ui.button(label="Опции dropdown", emoji="🎫",
+               style=discord.ButtonStyle.primary, custom_id="ego_panel_app_options")
+    async def btn_options(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(
+            EditPanelDropdownModal(self.config, self.parent_view)
+        )
+
+    @ui.button(label="Как это работает + футер + иконка", emoji="🧩",
+               style=discord.ButtonStyle.primary, custom_id="ego_panel_app_extras")
+    async def btn_extras(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(
+            EditPanelExtrasModal(self.config, self.parent_view)
+        )
+
+    @ui.button(label="↩ Назад", emoji="↩",
+               style=discord.ButtonStyle.secondary, custom_id="ego_panel_app_back")
+    async def btn_back(self, interaction: discord.Interaction, button: ui.Button):
+        try:
+            await interaction.response.edit_message(
+                embed=_dashboard_embed(self.config),
+                view=None,
+            )
+        except discord.HTTPException:
+            pass
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Только владелец родительского дашборда может жать кнопки
+        if interaction.user.id != self.parent_view.owner_id:
+            await interaction.response.send_message(
+                embed=build_error(
+                    description="Это меню открыл другой администратор."
+                ),
+                ephemeral=True,
+            )
+            return False
+        return True
+
+
+class EditPanelAppearanceModal(ui.Modal):
+    """Редактирование заголовка, описания, полей "Набор в клан/модерацию",
+    поля "Как это работает" и футера.
+
+    Discord лимит — 5 TextInput на модалку. Поэтому разбито на 2 модалки:
+    эта (основные тексты) и EditPanelDropdownModal (опции dropdown + иконка).
+    """
+
+    def __init__(self, config: dict, parent_view: EditorDashboardView):
+        super().__init__(title="🎨 Внешний вид панели — тексты")
+        self.config = config
+        self.parent_view = parent_view
+
+        self.title_input = ui.TextInput(
+            label="Заголовок embed'а панели",
+            placeholder="🛡️ СИСТЕМА НАБОРА EGO",
+            default=config.get("panel_title", ""),
+            required=False, max_length=200, style=discord.TextStyle.short,
+        )
+        self.add_item(self.title_input)
+
+        self.clan_field_title = ui.TextInput(
+            label="Заголовок поля «Клан»",
+            placeholder="🛡️ Набор в клан",
+            default=config.get("panel_clan_field_title", ""),
+            required=False, max_length=100, style=discord.TextStyle.short,
+        )
+        self.add_item(self.clan_field_title)
+
+        self.clan_field_desc = ui.TextInput(
+            label="Текст поля «Клан»",
+            placeholder="Хочешь стать частью сильнейшего клана?...",
+            default=config.get("panel_clan_field_desc", ""),
+            required=False, max_length=1000, style=discord.TextStyle.paragraph,
+        )
+        self.add_item(self.clan_field_desc)
+
+        self.mod_field_title = ui.TextInput(
+            label="Заголовок поля «Модерация»",
+            placeholder="👑 Набор в модерацию",
+            default=config.get("panel_mod_field_title", ""),
+            required=False, max_length=100, style=discord.TextStyle.short,
+        )
+        self.add_item(self.mod_field_title)
+
+        self.mod_field_desc = ui.TextInput(
+            label="Текст поля «Модерация»",
+            placeholder="Готов поддерживать порядок и помогать клану расти?...",
+            default=config.get("panel_mod_field_desc", ""),
+            required=False, max_length=1000, style=discord.TextStyle.paragraph,
+        )
+        self.add_item(self.mod_field_desc)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # Сохраняем только непустые поля; пустые → удаляем (используем дефолт)
+        def _save(key: str, value: str):
+            v = value.strip()
+            if v:
+                self.config[key] = v
+            else:
+                self.config.pop(key, None)
+
+        _save("panel_title", self.title_input.value)
+        _save("panel_clan_field_title", self.clan_field_title.value)
+        _save("panel_clan_field_desc", self.clan_field_desc.value)
+        _save("panel_mod_field_title", self.mod_field_title.value)
+        _save("panel_mod_field_desc", self.mod_field_desc.value)
+
+        if not _save_config(self.config):
+            await interaction.response.send_message(
+                embed=build_error(description="Не удалось сохранить config.json"),
+                ephemeral=True,
+            )
+            return
+
+        # Подсказка про вторую модалку
+        await interaction.response.send_message(
+            embed=build_success(
+                title="✅ Тексты панели обновлены",
+                description=(
+                    "Заголовок, поля «Клан» и «Модерация» сохранены.\n\n"
+                    "💡 Чтобы поменять также **«Как это работает»**, **футер** "
+                    "и **опции dropdown** (эмодзи/лейблы) — откройте "
+                    "`.editor` → **Внешний вид панели** ещё раз: теперь там "
+                    "появится кнопка для второй части настроек."
+                ),
+            ),
+            ephemeral=True,
+        )
+        try:
+            await self.parent_view.message.edit(embed=_dashboard_embed(self.config))
+        except (discord.HTTPException, AttributeError):
+            pass
+
+
+class EditPanelDropdownModal(ui.Modal):
+    """Вторая модалка: опции dropdown'а (эмодзи, лейблы, descriptions,
+    placeholder), поле «Как это работает», футер, иконка."""
+
+    def __init__(self, config: dict, parent_view: EditorDashboardView):
+        super().__init__(title="🎨 Внешний вид панели — опции и футер")
+        self.config = config
+        self.parent_view = parent_view
+
+        self.select_placeholder = ui.TextInput(
+            label="Placeholder dropdown'а",
+            placeholder="🎫 Выберите категорию...",
+            default=config.get("panel_select_placeholder", ""),
+            required=False, max_length=100, style=discord.TextStyle.short,
+        )
+        self.add_item(self.select_placeholder)
+
+        self.clan_option_label = ui.TextInput(
+            label="Лейбл опции «Клан»",
+            placeholder="Набор в клан",
+            default=config.get("panel_clan_option_label", ""),
+            required=False, max_length=100, style=discord.TextStyle.short,
+        )
+        self.add_item(self.clan_option_label)
+
+        self.clan_option_emoji = ui.TextInput(
+            label="Эмодзи опции «Клан» (1 символ)",
+            placeholder="🛡️",
+            default=config.get("panel_clan_option_emoji", ""),
+            required=False, max_length=10, style=discord.TextStyle.short,
+        )
+        self.add_item(self.clan_option_emoji)
+
+        self.mod_option_label = ui.TextInput(
+            label="Лейбл опции «Модерация»",
+            placeholder="Набор в модерацию",
+            default=config.get("panel_mod_option_label", ""),
+            required=False, max_length=100, style=discord.TextStyle.short,
+        )
+        self.add_item(self.mod_option_label)
+
+        self.mod_option_emoji = ui.TextInput(
+            label="Эмодзи опции «Модерация» (1 символ)",
+            placeholder="👑",
+            default=config.get("panel_mod_option_emoji", ""),
+            required=False, max_length=10, style=discord.TextStyle.short,
+        )
+        self.add_item(self.mod_option_emoji)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        def _save(key: str, value: str):
+            v = value.strip()
+            if v:
+                self.config[key] = v
+            else:
+                self.config.pop(key, None)
+
+        _save("panel_select_placeholder", self.select_placeholder.value)
+        _save("panel_clan_option_label", self.clan_option_label.value)
+        _save("panel_clan_option_emoji", self.clan_option_emoji.value)
+        _save("panel_mod_option_label", self.mod_option_label.value)
+        _save("panel_mod_option_emoji", self.mod_option_emoji.value)
+
+        if not _save_config(self.config):
+            await interaction.response.send_message(
+                embed=build_error(description="Не удалось сохранить config.json"),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            embed=build_success(
+                title="✅ Опции dropdown'а обновлены",
+                description=(
+                    f"**Placeholder:** {self.config.get('panel_select_placeholder') or '_(по умолчанию)_'}\n"
+                    f"**Клан:** {self.config.get('panel_clan_option_emoji', '🛡️')} "
+                    f"{self.config.get('panel_clan_option_label', 'Набор в клан')}\n"
+                    f"**Модерация:** {self.config.get('panel_mod_option_emoji', '👑')} "
+                    f"{self.config.get('panel_mod_option_label', 'Набор в модерацию')}\n\n"
+                    "💡 Чтобы изменения появились на панели — пересоздайте её через "
+                    "`.editor` → **♻️ Пересоздать панель**."
+                ),
+            ),
+            ephemeral=True,
+        )
+        try:
+            await self.parent_view.message.edit(embed=_dashboard_embed(self.config))
+        except (discord.HTTPException, AttributeError):
+            pass
+
+
+class EditPanelExtrasModal(ui.Modal):
+    """Третья модалка: поле «Как это работает», футер, иконка."""
+
+    def __init__(self, config: dict, parent_view: EditorDashboardView):
+        super().__init__(title="🎨 Панель — «Как это работает», футер, иконка")
+        self.config = config
+        self.parent_view = parent_view
+
+        self.howto_field_title = ui.TextInput(
+            label="Заголовок «Как это работает»",
+            placeholder="📝 Как это работает",
+            default=config.get("panel_howto_field_title", ""),
+            required=False, max_length=100, style=discord.TextStyle.short,
+        )
+        self.add_item(self.howto_field_title)
+
+        self.howto_field_desc = ui.TextInput(
+            label="Текст «Как это работает»",
+            placeholder="**1.** Выбери категорию в меню ниже\n**2.** Заполни анкету...",
+            default=config.get("panel_howto_field_desc", ""),
+            required=False, max_length=1000, style=discord.TextStyle.paragraph,
+        )
+        self.add_item(self.howto_field_desc)
+
+        self.footer = ui.TextInput(
+            label="Футер embed'а",
+            placeholder="EGODiscord System • Выбери категорию в меню ниже ⬇️",
+            default=config.get("panel_footer", ""),
+            required=False, max_length=200, style=discord.TextStyle.short,
+        )
+        self.add_item(self.footer)
+
+        self.thumbnail = ui.TextInput(
+            label="URL иконки панели (или пусто = по умолчанию)",
+            placeholder="https://cdn.discordapp.com/...",
+            default=config.get("panel_thumbnail_url", ""),
+            required=False, max_length=500, style=discord.TextStyle.short,
+        )
+        self.add_item(self.thumbnail)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        def _save(key: str, value: str):
+            v = value.strip()
+            if v:
+                self.config[key] = v
+            else:
+                self.config.pop(key, None)
+
+        # Валидация URL иконки
+        thumb = self.thumbnail.value.strip()
+        if thumb and not thumb.startswith(("http://", "https://")):
+            await interaction.response.send_message(
+                embed=build_error(description="URL иконки должен начинаться с http:// или https://"),
+                ephemeral=True,
+            )
+            return
+
+        _save("panel_howto_field_title", self.howto_field_title.value)
+        _save("panel_howto_field_desc", self.howto_field_desc.value)
+        _save("panel_footer", self.footer.value)
+        _save("panel_thumbnail_url", thumb)
+
+        if not _save_config(self.config):
+            await interaction.response.send_message(
+                embed=build_error(description="Не удалось сохранить config.json"),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            embed=build_success(
+                title="✅ Доп. настройки панели сохранены",
+                description=(
+                    "Поле «Как это работает», футер и иконка обновлены.\n\n"
+                    "💡 Чтобы изменения появились — пересоздайте панель через "
+                    "`.editor` → **♻️ Пересоздать панель**."
+                ),
+            ),
+            ephemeral=True,
+        )
+        try:
+            await self.parent_view.message.edit(embed=_dashboard_embed(self.config))
+        except (discord.HTTPException, AttributeError):
+            pass
+
+
 class EditSteamKeyModal(ui.Modal):
     def __init__(self, config: dict, parent_view: EditorDashboardView):
         super().__init__(title="🔑 Steam API ключ")
@@ -1132,14 +1547,23 @@ class EditPingRolesModal(ui.Modal):
         clan_ping = config.get("ping_roles_clan", [])
         mod_ping = config.get("ping_roles_mod", [])
 
+        # default может быть длиннее max_length=200, если config.json
+        # отредактирован вручную с >10 ролями. Обрезаем, иначе send_modal
+        # упадёт с HTTP 400.
+        def _truncate_default(s: str, n: int = 195) -> str:
+            return s[:n] + ("…" if len(s) > n else "")
+
+        clan_default = ", ".join(str(r) for r in clan_ping) if clan_ping else ""
+        mod_default = ", ".join(str(r) for r in mod_ping) if mod_ping else ""
+
         self.clan_input = ui.TextInput(
             label="Пинг при тикете Клан (через запятую)",
-            default=", ".join(str(r) for r in clan_ping) if clan_ping else "",
+            default=_truncate_default(clan_default),
             required=False, max_length=200, style=discord.TextStyle.short,
         )
         self.mod_input = ui.TextInput(
             label="Пинг при тикете Модерация (через запятую)",
-            default=", ".join(str(r) for r in mod_ping) if mod_ping else "",
+            default=_truncate_default(mod_default),
             required=False, max_length=200, style=discord.TextStyle.short,
         )
         self.add_item(self.clan_input)

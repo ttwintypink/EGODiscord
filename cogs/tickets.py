@@ -126,62 +126,219 @@ def _capitalize_first(text: Optional[str]) -> str:
 # ============================================================================
 
 def _build_panel_embed(config: dict) -> discord.Embed:
-    """Собирает embed панели тикетов с премиум-дизайном."""
+    """Собирает embed панели тикетов с премиум-дизайном.
+
+    Все текстовые элементы читаются из config (с fallback на дефолтные
+    значения), чтобы их можно было редактировать через `.editor`.
+    """
+    # ── Дефолтные значения (используются если в config ничего нет) ──────────
+    DEFAULT_PANEL_TITLE       = "🛡️ СИСТЕМА НАБОРА EGO"
+    DEFAULT_PANEL_DESC        = (
+        "## 🛡️ СИСТЕМА НАБОРА КЛАНА EGO\n\n"
+        "Добро пожаловать в **официальную систему набора** клана **EGO** — "
+        "одного из самых активных и сильных кланов Rust.\n\n"
+        "Выберите интересующую вас категорию в меню ниже, чтобы подать заявку. "
+        "Мы рассматриваем каждую анкету индивидуально.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    DEFAULT_CLAN_FIELD_TITLE  = "🛡️ Набор в клан"
+    DEFAULT_CLAN_FIELD_DESC   = (
+        "Хочешь стать частью сильнейшего клана?\n"
+        "Подай заявку и докажи, что достоин носить тег **EGO**."
+    )
+    DEFAULT_MOD_FIELD_TITLE   = "👑 Набор в модерацию"
+    DEFAULT_MOD_FIELD_DESC    = (
+        "Готов поддерживать порядок и помогать клану расти?\n"
+        "Подай заявку на должность модератора."
+    )
+    DEFAULT_HOWTO_FIELD_TITLE = "📝 Как это работает"
+    DEFAULT_HOWTO_FIELD_DESC  = (
+        "**1.** Выбери категорию в меню ниже\n"
+        "**2.** Заполни анкету (потребуется SteamID или ссылка на профиль)\n"
+        "**3.** Ожидай собеседования от рекрутёра\n"
+        "**4.** Получи ответ от рекрутёра в личные сообщения"
+    )
+    DEFAULT_PANEL_FOOTER      = "EGODiscord System • Выбери категорию в меню ниже ⬇️"
+    DEFAULT_PANEL_THUMBNAIL   = "https://cdn.discordapp.com/embed/avatars/0.png"
+
+    # ── Читаем значения из config ───────────────────────────────────────────
+    # ticket_panel_text — это ОПИСАНИЕ панели (старое поле, оставляем для
+    # обратной совместимости). Если задан panel_description, он имеет приоритет.
     custom_text = config.get("ticket_panel_text", "")
-    if custom_text and len(custom_text) > 20:
-        description = custom_text
-    else:
-        description = (
-            "## 🛡️ СИСТЕМА НАБОРА КЛАНА EGO\n\n"
-            "Добро пожаловать в **официальную систему набора** клана **EGO** — "
-            "одного из самых активных и сильных кланов Rust.\n\n"
-            "Выберите интересующую вас категорию в меню ниже, чтобы подать заявку. "
-            "Мы рассматриваем каждую анкету индивидуально.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        )
+    description = config.get("panel_description") or (
+        custom_text if custom_text and len(custom_text) > 20 else DEFAULT_PANEL_DESC
+    )
+
+    title = config.get("panel_title") or DEFAULT_PANEL_TITLE
+    clan_field_title = config.get("panel_clan_field_title") or DEFAULT_CLAN_FIELD_TITLE
+    clan_field_desc  = config.get("panel_clan_field_desc")  or DEFAULT_CLAN_FIELD_DESC
+    mod_field_title  = config.get("panel_mod_field_title")  or DEFAULT_MOD_FIELD_TITLE
+    mod_field_desc   = config.get("panel_mod_field_desc")   or DEFAULT_MOD_FIELD_DESC
+    howto_field_title = config.get("panel_howto_field_title") or DEFAULT_HOWTO_FIELD_TITLE
+    howto_field_desc  = config.get("panel_howto_field_desc")  or DEFAULT_HOWTO_FIELD_DESC
+    footer_text = config.get("panel_footer") or DEFAULT_PANEL_FOOTER
+    thumbnail_url = config.get("panel_thumbnail_url") or config.get("brand_thumbnail_url") or DEFAULT_PANEL_THUMBNAIL
+
+    # ── Цвет embed ──────────────────────────────────────────────────────────
+    embed_color_str = config.get("embed_color", "5865F2")
+    try:
+        embed_color_int = int(embed_color_str, 16)
+    except (ValueError, TypeError):
+        embed_color_int = COLOR_MAIN
 
     embed = discord.Embed(
-        title="🛡️ СИСТЕМА НАБОРА EGO",
-        description=description,
-        color=COLOR_MAIN,
+        title=title[:256],
+        description=description[:4096],
+        color=embed_color_int,
         timestamp=embeds.now_msk(),
     )
-    embed.add_field(
-        name="🛡️ Набор в клан",
-        value=(
-            "Хочешь стать частью сильнейшего клана?\n"
-            "Подай заявку и докажи, что достоин носить тег **EGO**."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="👑 Набор в модерацию",
-        value=(
-            "Готов поддерживать порядок и помогать клану расти?\n"
-            "Подай заявку на должность модератора."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="📝 Как это работает",
-        value=(
-            "**1.** Выбери категорию в меню ниже\n"
-            "**2.** Заполни анкету (потребуется SteamID или ссылка на профиль)\n"
-            "**3.** Ожидай собеседования от рекрутёра\n"
-            "**4.** Получи ответ от рекрутёра в личные сообщения"
-        ),
-        inline=False,
-    )
-    embed.set_thumbnail(
-        url="https://cdn.discordapp.com/embed/avatars/0.png"
-    )
-    embed.set_footer(text="EGODiscord System • Выбери категорию в меню ниже ⬇️")
+    embed.add_field(name=clan_field_title[:256], value=clan_field_desc[:1024], inline=False)
+    embed.add_field(name=mod_field_title[:256],  value=mod_field_desc[:1024],  inline=False)
+    embed.add_field(name=howto_field_title[:256], value=howto_field_desc[:1024], inline=False)
+    embed.set_thumbnail(url=thumbnail_url)
+    embed.set_footer(text=footer_text[:2048])
     return embed
+
+
+# ── Дефолты для опций dropdown'а панели ─────────────────────────────────────
+DEFAULT_PANEL_SELECT_PLACEHOLDER = "🎫 Выберите категорию..."
+DEFAULT_CLAN_OPTION_EMOJI  = "🛡️"
+DEFAULT_CLAN_OPTION_LABEL  = "Набор в клан"
+DEFAULT_CLAN_OPTION_DESC   = "Подать заявку на вступление в клан EGO"
+DEFAULT_MOD_OPTION_EMOJI   = "👑"
+DEFAULT_MOD_OPTION_LABEL   = "Набор в модерацию"
+DEFAULT_MOD_OPTION_DESC    = "Подать заявку на должность модератора"
+
+
+def _safe_emoji(s: str) -> Optional[str]:
+    """Возвращает emoji-строку для discord.SelectOption, либо None.
+
+    Discord принимает:
+    - 1 code point (например «🛡»)
+    - 2 code points если второй — VS16 (U+FE0F), ZWJ (U+200D) или skin-tone
+    - кастомный emoji в формате <:name:id> или <a:name:id>
+
+    Мы принимаем строку длиной 1-30 символов, отбрасываем пробелы и слишком
+    длинные строки (>30 — точно не emoji).
+    """
+    if not s:
+        return None
+    s = s.strip()
+    if not s or len(s) > 30:
+        return None
+    return s
+
+
+def _get_panel_select_options(config: dict) -> tuple[str, list[discord.SelectOption]]:
+    """Возвращает (placeholder, [SelectOption для клана, SelectOption для модера]).
+    Все значения читаются из config с fallback на дефолты — редактируется через
+    `.editor` → Внешний вид панели.
+    """
+    placeholder = config.get("panel_select_placeholder") or DEFAULT_PANEL_SELECT_PLACEHOLDER
+
+    clan_emoji = _safe_emoji(config.get("panel_clan_option_emoji")) or DEFAULT_CLAN_OPTION_EMOJI
+    clan_label = config.get("panel_clan_option_label") or DEFAULT_CLAN_OPTION_LABEL
+    clan_desc  = config.get("panel_clan_option_desc")  or DEFAULT_CLAN_OPTION_DESC
+
+    mod_emoji = _safe_emoji(config.get("panel_mod_option_emoji")) or DEFAULT_MOD_OPTION_EMOJI
+    mod_label = config.get("panel_mod_option_label") or DEFAULT_MOD_OPTION_LABEL
+    mod_desc  = config.get("panel_mod_option_desc")  or DEFAULT_MOD_OPTION_DESC
+
+    options = [
+        discord.SelectOption(
+            label=clan_label[:100],
+            description=clan_desc[:100],
+            emoji=clan_emoji,
+            value="clan",
+        ),
+        discord.SelectOption(
+            label=mod_label[:100],
+            description=mod_desc[:100],
+            emoji=mod_emoji,
+            value="mod",
+        ),
+    ]
+    return placeholder, options
 
 
 # ============================================================================
 # Цепочка модалок (поддержка >5 вопросов)
 # ============================================================================
+
+class NextChunkView(ui.View):
+    """View с кнопкой "Продолжить" для открытия следующего чанка анкеты.
+
+    Решает проблему: после on_submit модалки interaction.response уже
+    использован, и прямой send_modal() падает с ошибкой
+    "Value must be one of {4, 5, 6, 7, 10, 12}".
+
+    Паттерн: on_submit → send_message(ephemeral) с этой кнопкой →
+    по клику на кнопку открывается следующая модалка (новый interaction,
+    response свободен).
+    """
+
+    def __init__(self, ticket_type: str, config: dict, user: discord.Member,
+                 all_answers: list, next_chunk: int, total_chunks: int):
+        super().__init__(timeout=300)  # 5 минут на нажатие кнопки
+        self.ticket_type = ticket_type
+        self.config = config
+        self.user = user
+        self.all_answers = all_answers
+        self.next_chunk = next_chunk
+        self.total_chunks = total_chunks
+        self.message: Optional[discord.Message] = None  # для on_timeout
+
+    @ui.button(label="Продолжить заполнение →", emoji="➡️",
+               style=discord.ButtonStyle.success, custom_id="ego_next_chunk")
+    async def continue_btn(self, interaction: discord.Interaction, button: ui.Button):
+        # Проверяем, что нажал тот же пользователь, который заполнял анкету
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message(
+                embed=build_error(
+                    description="Эту анкету заполняет другой пользователь. "
+                                "Создайте свою через панель тикетов."
+                ),
+                ephemeral=True,
+            )
+            return
+        modal = ApplicationModal(
+            self.ticket_type, self.config, self.user,
+            self.all_answers, self.next_chunk,
+        )
+        try:
+            await interaction.response.send_modal(modal)
+        except discord.HTTPException as e:
+            log.error("Не удалось открыть следующий чанк через кнопку: %s", e)
+            try:
+                await interaction.response.send_message(
+                    embed=build_error(
+                        description=f"Не удалось открыть следующую часть: `{e}`. "
+                                    f"Попробуйте ещё раз или обратитесь к администратору."
+                    ),
+                    ephemeral=True,
+                )
+            except discord.HTTPException:
+                pass
+
+    async def on_timeout(self):
+        # По таймауту — дизейблим кнопку и обновляем сообщение
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(
+                    embed=build_warning(
+                        title="⏰ Время истекло",
+                        description=(
+                            "Время на продолжение анкеты вышло.\n"
+                            "Создайте новую заявку через панель тикетов."
+                        ),
+                    ),
+                    view=self,
+                )
+            except discord.HTTPException:
+                pass
+
 
 class ApplicationModal(ui.Modal):
     """
@@ -247,31 +404,66 @@ class ApplicationModal(ui.Modal):
             value = inp.value.strip() if inp.value else ""
             self._all_answers.append((q, value))
 
-        # Если есть ещё чанки — открываем следующую модалку
-        # В discord.py 2.x: после отправки модалки interaction.response уже использован,
-        # но on_submit получает НОВЫЙ interaction, для которого можно вызвать send_modal
+        # Если есть ещё чанки — открываем следующую модалку.
+        # ⚠️ ВАЖНО: в discord.py 2.7+ и новом Discord API прямой вызов
+        # interaction.response.send_modal() из on_submit() часто падает с
+        # ошибкой "Value must be one of {4, 5, 6, 7, 10, 12}" (Invalid Form Body).
+        # Это происходит потому, что interaction.response уже "потрачен" на
+        # submit, и send_modal пытается отправить новый компонент поверх.
+        #
+        # Решение: сначала отправляем ephemeral-сообщение с кнопкой
+        # "Продолжить", по клику на которую открывается следующая модалка.
+        # Это надёжно работает во всех версиях Discord API.
         next_idx = self._chunk_index + 1
         if next_idx < len(self._chunks):
-            next_modal = ApplicationModal(
+            # Сохраняем промежуточные ответы в БД? Нет — храним в view.
+            # Показываем кнопку "Продолжить".
+            view = NextChunkView(
                 self.ticket_type, self.config, self.user,
-                self._all_answers, next_idx,
+                self._all_answers, next_idx, len(self._chunks),
             )
             try:
-                await interaction.response.send_modal(next_modal)
-            except discord.HTTPException as e:
-                log.warning("Не удалось открыть следующую модалку: %s", e)
-                # Fallback: уведомить пользователя
-                try:
-                    await interaction.response.send_message(
-                        embed=build_error(
-                            description=f"Не удалось открыть следующую часть анкеты: `{e}`. "
-                                        f"Попробуйте ещё раз.",
+                await interaction.response.send_message(
+                    embed=build_success(
+                        title=f"✅ Часть {self._chunk_index + 1}/{len(self._chunks)} сохранена",
+                        description=(
+                            f"Ответы приняты. Осталось заполнить ещё "
+                            f"**{len(self._chunks) - next_idx}** часть анкеты.\n\n"
+                            f"👇 Нажмите кнопку ниже, чтобы продолжить."
                         ),
-                        ephemeral=True,
-                    )
-                except discord.HTTPException:
+                    ),
+                    view=view,
+                    ephemeral=True,
+                )
+                # Сохраняем ссылку на сообщение для on_timeout
+                try:
+                    view.message = await interaction.original_response()
+                except (discord.HTTPException, AttributeError):
                     pass
-                return
+            except discord.HTTPException as e:
+                log.warning("Не удалось отправить сообщение-переход: %s", e)
+                # Запасной вариант: пробуем старый способ
+                next_modal = ApplicationModal(
+                    self.ticket_type, self.config, self.user,
+                    self._all_answers, next_idx,
+                )
+                try:
+                    await interaction.response.send_modal(next_modal)
+                except discord.HTTPException as e2:
+                    log.error("Все способы открыть следующую модалку провалились: %s", e2)
+                    try:
+                        await interaction.followup.send(
+                            embed=build_error(
+                                description=(
+                                    "Не удалось открыть следующую часть анкеты. "
+                                    f"Попробуйте ещё раз или обратитесь к администратору. "
+                                    f"Ошибка: `{e2}`"
+                                ),
+                            ),
+                            ephemeral=True,
+                        )
+                    except discord.HTTPException:
+                        pass
             return
 
         # Это последний чанк — собираем все ответы
@@ -434,8 +626,11 @@ class ApplicationModal(ui.Modal):
             log.warning("Не удалось отправить/закрепить управление: %s", e)
             control_msg = None
 
-        # 9. Анкета — отдельный embed (закреплённый)
-        form_embed = discord.Embed(
+        # 9. Анкета — отдельный embed (закреплённый).
+        # ⚠️ Discord лимит: embed total ≤ 6000 символов. При 15 вопросах с
+        # длинными ответами не помещается → разбиваем на несколько embed'ов.
+        form_embeds = []
+        cur_embed = discord.Embed(
             title="📋 Анкета кандидата",
             description=(
                 f"## 👤 {user.mention}\n"
@@ -446,21 +641,49 @@ class ApplicationModal(ui.Modal):
             color=COLOR_MAIN,
             timestamp=embeds.now_msk(),
         )
-        form_embed.set_thumbnail(url=user.display_avatar.url)
-        form_embed.set_footer(text="EGODiscord System • Анкета кандидата")
+        cur_embed.set_thumbnail(url=user.display_avatar.url)
+        cur_embed.set_footer(text="EGODiscord System • Анкета кандидата")
+        form_embeds.append(cur_embed)
+
+        # Эвристика: если в одном embed'е сумма длин полей + описание > 4500
+        # символов — начинаем новый embed.
+        cur_total = len(cur_embed.description or "")
+        MAX_PER_EMBED = 4500  # оставляем запас под title/footer/thumbnail url
 
         for i, (q, a) in enumerate(answers, 1):
-            form_embed.add_field(
-                name=f"❓ {i}. {q['title'][:250]}",
-                value=(a[:1024] if a else "—"),
-                inline=False,
-            )
+            field_name = f"❓ {i}. {q['title'][:250]}"
+            field_val = (a[:1024] if a else "—")
+            field_len = len(field_name) + len(field_val) + 4
+
+            if cur_total + field_len > MAX_PER_EMBED and len(cur_embed.fields) > 0:
+                # Начинаем новый embed
+                cur_embed = discord.Embed(
+                    title=f"📋 Анкета кандидата (продолжение {len(form_embeds) + 1})",
+                    description="",
+                    color=COLOR_MAIN,
+                    timestamp=embeds.now_msk(),
+                )
+                cur_embed.set_footer(text="EGODiscord System • Анкета кандидата (продолжение)")
+                form_embeds.append(cur_embed)
+                cur_total = 0
+
+            cur_embed.add_field(name=field_name, value=field_val, inline=False)
+            cur_total += field_len
 
         try:
-            form_msg = await channel.send(embed=form_embed)
-            await form_msg.pin()
+            # Отправляем все embed'ы, первый закрепляем
+            form_msgs = []
+            for idx, fe in enumerate(form_embeds):
+                m = await channel.send(embed=fe)
+                form_msgs.append(m)
+                if idx == 0:
+                    try:
+                        await m.pin()
+                    except discord.HTTPException:
+                        pass
+            form_msg = form_msgs[0] if form_msgs else None
         except discord.HTTPException as e:
-            log.warning("Не удалось закрепить анкету: %s", e)
+            log.warning("Не удалось отправить/закрепить анкету: %s", e)
             form_msg = None
 
         # 10. Записываем сообщения в БД для транскрипта
@@ -812,24 +1035,12 @@ class TicketPanelView(ui.View):
         super().__init__(timeout=None)
         self.config = config
 
+        placeholder, options = _get_panel_select_options(config)
         select = ui.Select(
             custom_id="ego_ticket_panel_select",
-            placeholder="🎫 Выберите категорию...",
+            placeholder=placeholder[:100] if placeholder else None,
             min_values=1, max_values=1,
-            options=[
-                discord.SelectOption(
-                    label="Набор в клан",
-                    description="Подать заявку на вступление в клан EGO",
-                    emoji="🛡️",
-                    value="clan",
-                ),
-                discord.SelectOption(
-                    label="Набор в модерацию",
-                    description="Подать заявку на должность модератора",
-                    emoji="👑",
-                    value="mod",
-                ),
-            ],
+            options=options,
         )
         select.callback = self.on_select
         self.add_item(select)
@@ -985,11 +1196,18 @@ class SetupDropdownView(ui.View):
                 pass
 
     async def _action_create_panel(self, interaction: discord.Interaction):
+        # Сначала defer — channel.send может занять >3 сек на медленном API,
+        # и interaction протухнет. С defer — можем потом followup.send.
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.HTTPException:
+            pass
+
         embed = _build_panel_embed(self.config)
         view = TicketPanelView(self.config)
         try:
             await interaction.channel.send(embed=embed, view=view)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=build_success(
                     title="✅ Панель создана",
                     description=f"Панель тикетов отправлена в {interaction.channel.mention}.",
@@ -997,10 +1215,19 @@ class SetupDropdownView(ui.View):
                 ephemeral=True,
             )
         except discord.HTTPException as e:
-            await interaction.response.send_message(
-                embed=build_error(description=f"Не удалось создать панель: `{e}`"),
-                ephemeral=True,
-            )
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(
+                        embed=build_error(description=f"Не удалось создать панель: `{e}`"),
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.response.send_message(
+                        embed=build_error(description=f"Не удалось создать панель: `{e}`"),
+                        ephemeral=True,
+                    )
+            except discord.HTTPException:
+                pass
 
     async def _action_recreate_panel(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
