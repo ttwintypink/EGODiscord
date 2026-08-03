@@ -199,6 +199,140 @@ def _resolve_token() -> str:
     return ""
 
 
+async def _preflight_discord_check() -> tuple[bool, str]:
+    """
+    Предзапуск: проверяем доступность Discord API.
+    
+    Возвращает (ok, message). Если ok=False — message содержит человекочитаемую
+    инструкцию что делать.
+    """
+    import aiohttp
+    test_urls = [
+        ("Discord API", "https://discord.com/api/v10/gateway"),
+        ("Discord CDN", "https://discord.com/api/v10/ping"),
+    ]
+    results = []
+    for name, url in test_urls:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=15)
+                ) as resp:
+                    results.append((name, resp.status, None))
+        except asyncio.TimeoutError:
+            results.append((name, None, "timeout"))
+        except aiohttp.ClientConnectorError as e:
+            results.append((name, None, f"connect_error: {e}"))
+        except Exception as e:
+            results.append((name, None, f"{type(e).__name__}: {e}"))
+    
+    # Discord API должен ответить 200
+    api_ok = results[0][1] == 200
+    if api_ok:
+        return True, "Discord API доступен"
+    
+    # Формируем человекочитаемую диагностику
+    msg_lines = [
+        "═══════════════════════════════════════════════════════════",
+        "  ⚠️  НЕ УДАЛОСЬ ПОДКЛЮЧИТЬСЯ К DISCORD",
+        "═══════════════════════════════════════════════════════════",
+        "",
+        "  Результаты проверки сети:",
+    ]
+    for name, status, err in results:
+        if status:
+            msg_lines.append(f"    {name}: HTTP {status}")
+        else:
+            msg_lines.append(f"    {name}: ❌ {err}")
+    
+    msg_lines.extend([
+        "",
+        "  ═══════ ВОЗМОЖНЫЕ ПРИЧИНЫ И РЕШЕНИЯ ═══════",
+        "",
+        "  1️⃣  WARP/VPN не маршрутизирует Python-трафик",
+        "     • Браузер может работать через WARP, а Python — нет",
+        "     • Решение для Cloudflare WARP:",
+        "       - Откройте WARP → Settings → Advanced → Connection options",
+        "       - Включите WARP/tunnel (не только 1.1.1.1 DNS)",
+        "       - Перезапустите WARP",
+        "     • Альтернатива: включите системный VPN (Wireguard, OpenVPN,",
+        "       Outline, Amnezia) — он маршрутизирует весь трафик",
+        "",
+        "  2️⃣  Провайдер блокирует discord.com",
+        "     • Проверь: в браузере открой https://discord.com",
+        "       если не открывается — нужен VPN",
+        "     • Если в браузере работает, а в Python нет — см. пункт 1",
+        "",
+        "  3️⃣  Антивирус/брандмауэр блокирует Python",
+        "     • Добавь python.exe в исключения антивируса",
+        "     • Проверь Windows Defender Firewall",
+        "",
+        "  4️⃣  DNS-проблемы",
+        "     • Попробуй сменить DNS на 1.1.1.1 (Cloudflare) или 8.8.8.8 (Google)",
+        "       в настройках сетевого адаптера",
+        "",
+        "  ═══════════════════════════════════════════════════════════",
+    ])
+    return False, "\n".join(msg_lines)
+
+
+async def _start_with_retry(bot: commands.Bot, token: str, max_attempts: int = 3):
+    """
+    Запускает бота с retry-логикой.
+    
+    Если бот не может подключиться к Discord — пробуем ещё раз через
+    5/10/20 секунд (экспоненциальная задержка).
+    
+    Но если токен невалидный (401) — не ретраим, это бессмысленно.
+    """
+    import aiohttp
+    import discord
+    
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await bot.start(token)
+            return  # если вернулись — бот завершился штатно
+        except discord.LoginFailure as e:
+            # 401 Unauthorized — токен невалидный, ретраить бессмысленно
+            log.error("═══════════════════════════════════════════════════════════")
+            log.error("  ТОКЕН НЕВАЛИДНЫЙ — Discord отклонил авторизацию")
+            log.error("  Токен: %s...%s", token[:10], token[-4:])
+            log.error("  Ошибка: %s", e)
+            log.error("  ")
+            log.error("  Проверьте:")
+            log.error("    1. Скопирован ли токен полностью (без пробелов)")
+            log.error("    2. Не отозван ли токен на https://discord.com/developers")
+            log.error("    3. Не сброшен ли токен (Reset Token в настройках бота)")
+            log.error("═══════════════════════════════════════════════════════════")
+            raise
+        except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError,
+                asyncio.TimeoutError, ConnectionError, OSError) as e:
+            # Сетевая ошибка — ретраим
+            if attempt < max_attempts:
+                wait = 5 * (2 ** (attempt - 1))  # 5, 10, 20 секунд
+                log.warning(
+                    "Сетевая ошибка при подключении к Discord (попытка %d/%d): %s",
+                    attempt, max_attempts, e,
+                )
+                log.warning("Повторная попытка через %d секунд...", wait)
+                await asyncio.sleep(wait)
+                continue
+            # Все попытки провалились
+            log.error("═══════════════════════════════════════════════════════════")
+            log.error("  НЕ УДАЛОСЬ ПОДКЛЮЧИТЬСЯ К DISCORD ЗА %d ПОПЫТКИ", max_attempts)
+            log.error("  Последняя ошибка: %s: %s", type(e).__name__, e)
+            log.error("═══════════════════════════════════════════════════════════")
+            ok, msg = await _preflight_discord_check()
+            log.error(msg)
+            raise
+        except KeyboardInterrupt:
+            log.info("Остановка по Ctrl+C")
+            return
+        except Exception as e:
+            log.exception("Непредвиденная ошибка при запуске бота: %s", e)
+            raise
+
+
 async def main():
     # Инициализируем БД до старта бота
     await database.init_db()
@@ -231,7 +365,23 @@ async def main():
             log.error("═══════════════════════════════════════════════════════════")
             sys.exit(1)
 
-        await bot.start(token)
+        # Pre-flight проверка Discord (только на Windows/локально —
+        # на хостинге Discord всегда доступен)
+        import platform
+        if platform.system() == "Windows":
+            log.info("Проверка доступности Discord API...")
+            ok, msg = await _preflight_discord_check()
+            if ok:
+                log.info("✅ Discord API доступен. Запуск бота...")
+            else:
+                log.error(msg)
+                log.error("")
+                log.error("Бот не запущен. Исправьте сетевую проблему и попробуйте снова.")
+                log.error("Подсказка: запустите 'python diagnose.py' для детальной диагностики.")
+                sys.exit(1)
+
+        # Запуск с retry-логикой
+        await _start_with_retry(bot, token, max_attempts=3)
 
 
 if __name__ == "__main__":
