@@ -205,7 +205,18 @@ async def _handle_claim(interaction: discord.Interaction, config: dict,
     await interaction.followup.send(
         embed=build_success(
             title="🤝 Тикет взят в работу",
-            description=f"Тикет взят в работу модератором {interaction.user.mention}.",
+            description=(
+                f"## ✅ Заявка принята\n\n"
+                f"Модератор **{interaction.user.mention}** взял тикет в работу.\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📞 Следующий шаг — голосовой обзвон.\n"
+                f"⏳ Пожалуйста, оставайтесь онлайн и следите за уведомлениями."
+            ),
+            fields=[
+                ("👤 Модератор", interaction.user.mention, True),
+                ("⏱️ Время", msk_timestamp(), True),
+            ],
+            footer_text="EGODiscord System • Ожидайте голосового вызова",
         )
     )
 

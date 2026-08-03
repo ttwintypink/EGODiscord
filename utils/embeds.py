@@ -43,7 +43,8 @@ def _build(color: int, title: Optional[str], description: Optional[str],
            thumbnail: Optional[str] = None,
            image: Optional[str] = None,
            author_name: Optional[str] = None,
-           author_icon: Optional[str] = None) -> discord.Embed:
+           author_icon: Optional[str] = None,
+           author_url: Optional[str] = None) -> discord.Embed:
     """Внутренний строитель Embed-а."""
     embed = discord.Embed(
         title=title,
@@ -61,8 +62,12 @@ def _build(color: int, title: Optional[str], description: Optional[str],
     if image:
         embed.set_image(url=image)
     if author_name:
-        embed.set_author(name=author_name,
-                         icon_url=author_icon if author_icon else discord.Embed.Empty)
+        # Современный discord.py использует None вместо discord.Embed.Empty
+        embed.set_author(
+            name=author_name,
+            url=author_url or None,
+            icon_url=author_icon or None,
+        )
     return embed
 
 
@@ -71,43 +76,53 @@ def _build(color: int, title: Optional[str], description: Optional[str],
 def build_main(title: str, description: str = "",
                fields: Optional[list[tuple[str, str, bool]]] = None,
                footer_text: Optional[str] = None,
-               thumbnail: Optional[str] = None) -> discord.Embed:
+               thumbnail: Optional[str] = None,
+               image: Optional[str] = None) -> discord.Embed:
     return _build(COLOR_MAIN, title, description or None, fields,
-                  footer_text, thumbnail)
+                  footer_text, thumbnail, image=image)
 
 
 def build_success(title: str = "✅ Успешно", description: str = "",
                   fields: Optional[list[tuple[str, str, bool]]] = None,
                   footer_text: Optional[str] = None,
-                  thumbnail: Optional[str] = None) -> discord.Embed:
+                  thumbnail: Optional[str] = None,
+                  image: Optional[str] = None) -> discord.Embed:
     return _build(COLOR_SUCCESS, title, description or None, fields,
-                  footer_text, thumbnail)
+                  footer_text, thumbnail, image=image)
 
 
 def build_error(title: str = "❌ Ошибка", description: str = "",
                 fields: Optional[list[tuple[str, str, bool]]] = None,
                 footer_text: Optional[str] = None,
-                thumbnail: Optional[str] = None) -> discord.Embed:
+                thumbnail: Optional[str] = None,
+                image: Optional[str] = None) -> discord.Embed:
     return _build(COLOR_ERROR, title, description or None, fields,
-                  footer_text, thumbnail)
+                  footer_text, thumbnail, image=image)
 
 
 def build_warning(title: str = "⚠️ Внимание", description: str = "",
                   fields: Optional[list[tuple[str, str, bool]]] = None,
                   footer_text: Optional[str] = None,
-                  thumbnail: Optional[str] = None) -> discord.Embed:
+                  thumbnail: Optional[str] = None,
+                  image: Optional[str] = None) -> discord.Embed:
     return _build(COLOR_WARNING, title, description or None, fields,
-                  footer_text, thumbnail)
+                  footer_text, thumbnail, image=image)
 
 
 def build_info(title: str, description: str = "",
                fields: Optional[list[tuple[str, str, bool]]] = None,
                footer_text: Optional[str] = None,
                thumbnail: Optional[str] = None,
-               color: Optional[int] = None) -> discord.Embed:
+               image: Optional[str] = None,
+               color: Optional[int] = None,
+               author_name: Optional[str] = None,
+               author_icon: Optional[str] = None,
+               author_url: Optional[str] = None) -> discord.Embed:
     """Универсальная сборка с произвольным цветом (по умолчанию Main)."""
     return _build(color or COLOR_MAIN, title, description or None, fields,
-                  footer_text, thumbnail)
+                  footer_text, thumbnail, image=image,
+                  author_name=author_name, author_icon=author_icon,
+                  author_url=author_url)
 
 
 # --- Готовые часто используемые embed'ы -------------------------------------

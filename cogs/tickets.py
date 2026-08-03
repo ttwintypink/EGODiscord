@@ -272,10 +272,17 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
             return
 
         # Предупреждение о проверке
+        progress_msg = None
         try:
-            await channel.send(embed=build_info(
-                title="🛡️ Проверка Steam",
-                description="⏳ Идёт проверка Steam-аккаунта...",
+            progress_msg = await channel.send(embed=build_info(
+                title="🛡️ Проверка Steam-аккаунта",
+                description=(
+                    "⏳ **Идёт проверка...**\n\n"
+                    "`▸` Парсинг SteamID...\n"
+                    "`▸` Запрос к Steam API...\n"
+                    "`▸` Проверка VAC-банов...\n"
+                    "`▸` Подсчёт часов в Rust..."
+                ),
             ))
         except discord.HTTPException:
             pass
@@ -293,66 +300,190 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
                 error_msg = "Невалидный Steam API ключ. Обратитесь к разработчику бота."
             elif "rate_limited" in str(error_msg):
                 error_msg = "Превышен лимит запросов к Steam API. Попробуйте позже."
-            elif "403" in str(error_msg):
-                error_msg = "Steam API отклонил запрос (403). Проверьте STEAM_API_KEY в config.json."
 
             embed = build_warning(
                 title="🛡️ Проверка Steam — не удалась",
-                description=f"Не удалось проверить аккаунт.\n"
-                            f"Ввод: `{steam_raw[:200]}`\n"
-                            f"Причина: `{error_msg}`",
+                description=(
+                    f"## ⚠️ Не удалось проверить аккаунт\n\n"
+                    f"**Ввод:** `{steam_raw[:200]}`\n"
+                    f"**Причина:** `{error_msg}`\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"💡 **Совет модератору:** проверьте аккаунт вручную."
+                ),
             )
             try:
-                await channel.send(embed=embed)
+                if progress_msg:
+                    await progress_msg.edit(embed=embed)
+                else:
+                    await channel.send(embed=embed)
             except discord.HTTPException:
                 pass
             return
 
-        # Цвет и статус бана
+        # ── Цвет и статус бана ────────────────────────────────────────────────
         if result["vac_banned"] or result["community_banned"]:
             color = COLOR_ERROR
-            status_text = "🔴 VAC-бан" if result["vac_banned"] else "🔴 Community-бан"
+            if result["vac_banned"] and result["community_banned"]:
+                status_text = "🔴 VAC + Community бан"
+            elif result["vac_banned"]:
+                status_text = "🔴 VAC-бан"
+            else:
+                status_text = "🔴 Community-бан"
+            risk_emoji = "⚠️"
         elif result["profile_state"] == "private":
             color = COLOR_WARNING
             status_text = "🟡 Профиль приватный"
+            risk_emoji = "⚠️"
         else:
             color = COLOR_SUCCESS
-            status_text = "🟢 Чистый"
+            status_text = "🟢 Аккаунт чистый"
+            risk_emoji = "✅"
 
-        # Часы в Rust
+        # ── Часы в Rust с цветовой индикацией ────────────────────────────────
+        source = result.get("source", "unknown")
         if result["hours_rust"] is None:
             if result["profile_state"] == "private":
-                hours_text = "🔒 Скрыто (профиль приватный)"
+                hours_text = "🔒 Скрыто (приватный профиль)"
+                hours_emoji = "🔒"
+            elif source in ("html", "mixed") and not api_key:
+                # HTML не может получить playtime без логина Steam
+                hours_text = "ℹ️ Требуется Steam API ключ"
+                hours_emoji = "ℹ️"
             else:
-                hours_text = "🔍 Игра Rust не найдена в библиотеке"
+                hours_text = "❌ Rust не найдена в библиотеке"
+                hours_emoji = "❌"
         else:
-            hours_text = f"🎮 {result['hours_rust']:.1f} часов"
+            hours = result['hours_rust']
+            if hours >= 500:
+                hours_emoji = "🔥"
+            elif hours >= 100:
+                hours_emoji = "⚔️"
+            elif hours >= 20:
+                hours_emoji = "🎮"
+            else:
+                hours_emoji = "🌱"
+            hours_text = f"{hours_emoji} **{hours:.1f}** часов"
 
-        # Ссылка на профиль
-        profile_url = result.get("profile_url", "—")
+        # ── Онлайн-статус ────────────────────────────────────────────────────
+        online_status = result.get("online_status", "unknown")
+        status_icons = {
+            "online": "🟢 Онлайн",
+            "offline": "⚫ Офлайн",
+            "in-game": "🎮 В игре",
+            "unknown": "❓ Неизвестно",
+        }
+        online_display = status_icons.get(online_status, "❓ Неизвестно")
+
+        # ── Дополнительные поля ───────────────────────────────────────────────
         persona = result.get("persona") or "—"
+        profile_url = result.get("profile_url", "—")
+        steamid = result.get("steamid", "—")
+        last_seen = result.get("last_seen", "—")
+        account_created = result.get("account_created", "—")
+        country = result.get("country_code") or "—"
+        playing_now = result.get("currently_playing")
 
+        # Флаг страны (через эмодзи)
+        if country and country != "—" and len(country) == 2:
+            # Regional indicator symbols: codepoints 0x1F1E6 + (letter - 'A')
+            try:
+                flag = chr(0x1F1E6 + ord(country[0]) - ord('A')) + \
+                       chr(0x1F1E6 + ord(country[1]) - ord('A'))
+                country_display = f"{flag} {country}"
+            except Exception:
+                country_display = country
+        else:
+            country_display = country
+
+        # Источник данных
+        source_text = {
+            "api": "🌐 Steam Web API",
+            "html": "📡 HTML-парсинг",
+            "mixed": "🌐+📡 API + HTML",
+        }.get(source, "❓ Неизвестно")
+
+        # ── Заголовок ─────────────────────────────────────────────────────────
+        if result["vac_banned"] or result["community_banned"]:
+            title = "🚨 ОБНАРУЖЕН БАН!"
+        elif result["profile_state"] == "private":
+            title = "🛡️ Профиль приватный"
+        elif source == "html":
+            title = "🛡️ Базовая проверка Steam"
+        else:
+            title = "🛡️ Проверка Steam завершена"
+
+        # ── Описание ──────────────────────────────────────────────────────────
+        description = (
+            f"## {risk_emoji} {persona}\n\n"
+            f"Аккаунт кандидата {self.user.mention} проверен.\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+
+        # Если HTML-парсинг — добавим предупреждение
+        if source == "html" and not api_key:
+            description += (
+                f"\n\n⚠️ **Базовая проверка** — Steam API ключ не настроен.\n"
+                f"Для получения VAC-банов и часов в Rust добавьте ключ в `config.json`.\n"
+                f"Получить бесплатно: https://steamcommunity.com/dev/apikey"
+            )
+
+        # ── Поля ───────────────────────────────────────────────────────────────
         fields = [
-            ("Статус аккаунта", status_text, True),
-            ("Часы в Rust", hours_text, True),
-            ("SteamID64", f"`{result.get('steamid', '—')}`", False),
-            ("Ник в Steam", persona, True),
-            ("Профиль Steam", f"[Открыть профиль]({profile_url})", True),
+            ("🛡️ Статус аккаунта", status_text, True),
+            ("🎮 Часы в Rust", hours_text, True),
+            ("📡 Статус", online_display, True),
+            ("🌍 Страна", country_display, True),
+            ("📅 Создан", account_created, True),
+            ("👁️ Последний заход", last_seen, True),
+            ("🌐 Источник", source_text, False),
         ]
 
+        if playing_now:
+            fields.append(("🎮 Сейчас играет", f"**{playing_now}**", False))
+
+        fields.extend([
+            ("🆔 SteamID64", f"`{steamid}`", False),
+            ("🔗 Профиль Steam", f"**[Открыть профиль →]({profile_url})**", False),
+        ])
+
+        # Дни с последнего бана
+        days_ban = result.get("days_since_last_ban")
+        if days_ban and days_ban > 0:
+            fields.append((
+                "⏰ Дней с последнего бана",
+                f"**{days_ban}** дн.",
+                True,
+            ))
+
         avatar = result.get("avatar")
-        embed_kwargs = dict(
-            title="🛡️ Проверка Steam завершена",
-            description=f"Аккаунт кандидата {self.user.mention} проверен через Steam Web API.",
+        embed = build_info(
+            color=color,
+            title=title,
+            description=description,
             fields=fields,
             thumbnail=avatar if avatar else None,
+            footer_text="EGODiscord System • Steam Verification",
         )
-        embed = build_info(color=color, **embed_kwargs)
+
+        # Добавляем author-блок с ником и ссылкой на профиль
+        if persona != "—":
+            embed.set_author(
+                name=persona,
+                url=profile_url if profile_url != "—" else None,
+                icon_url=avatar if avatar else None,
+            )
 
         try:
-            await channel.send(embed=embed)
+            if progress_msg:
+                await progress_msg.edit(embed=embed)
+            else:
+                await channel.send(embed=embed)
         except discord.HTTPException as e:
             log.warning("Не удалось отправить Steam-проверку: %s", e)
+            try:
+                await channel.send(embed=embed)
+            except discord.HTTPException:
+                pass
 
 
 # ============================================================================

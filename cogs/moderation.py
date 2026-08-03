@@ -251,17 +251,24 @@ class Moderation(commands.Cog):
         if not top:
             await ctx.send(embed=build_info(
                 title="📊 Статистика рекрутеров",
-                description="Статистика пока пуста. Закройте первый тикет, чтобы данные появились.",
+                description=(
+                    "## 📈 Статистика пуста\n\n"
+                    "Пока нет закрытых тикетов.\n"
+                    "Закройте первый тикет, чтобы данные появились."
+                ),
             ))
             return
 
-        embed = build_main(
-            title="📊 ТОП рекрутеров EGO",
-            description="Статистика накапливается бесконечно (без сброса).",
-        )
+        # Считаем общую статистику
+        total_tickets = sum(r["ticket_count"] for r in top)
+        total_ratings = sum(r["ratings_count"] for r in top)
+        all_stars = sum(r["total_stars"] for r in top)
+        avg_all = (all_stars / total_ratings) if total_ratings else 0
 
-        medals = ["🥇", "🥈", "🥉"] + ["🔹"] * 7
-        for i, row in enumerate(top):
+        # Текстовое описание лидерборда
+        lines = []
+        medals = ["🥇", "🥈", "🥉"] + [f"**{i+1}.**" for i in range(3, 10)]
+        for i, row in enumerate(top[:10]):
             recruiter_id = row["recruiter_id"]
             ticket_count = row["ticket_count"]
             total_stars = row["total_stars"]
@@ -273,25 +280,36 @@ class Moderation(commands.Cog):
 
             # Читаемое время реакции
             if avg_reaction >= 3600:
-                reaction_str = f"{avg_reaction/3600:.1f} ч"
+                reaction_str = f"{avg_reaction/3600:.1f}ч"
             elif avg_reaction >= 60:
-                reaction_str = f"{avg_reaction/60:.1f} мин"
+                reaction_str = f"{avg_reaction/60:.1f}мин"
             else:
-                reaction_str = f"{avg_reaction:.0f} сек"
+                reaction_str = f"{avg_reaction:.0f}сек"
 
             stars_str = "⭐" * round(avg_rating) if avg_rating else "—"
-            embed.add_field(
-                name=f"{medals[i]} <@{recruiter_id}> (`{recruiter_id}`)",
-                value=(
-                    f"Тикетов закрыто: **{ticket_count}**\n"
-                    f"Средняя оценка: **{avg_rating:.1f}/5** {stars_str} "
-                    f"({ratings_count} оценок)\n"
-                    f"Средняя скорость реакции: **{reaction_str}**"
-                ),
-                inline=False,
+            medal = medals[i] if i < len(medals) else f"**{i+1}.**"
+
+            lines.append(
+                f"{medal} <@{recruiter_id}> `{recruiter_id}`\n"
+                f"   ┣ 📋 Тикетов: **{ticket_count}**\n"
+                f"   ┣ ⭐ Оценка: **{avg_rating:.1f}/5** {stars_str} ({ratings_count} оценок)\n"
+                f"   ┗ ⚡ Реакция: **{reaction_str}**"
             )
 
-        embed.set_footer(text=f"EGODiscord System • {msk_timestamp()}")
+        embed = build_main(
+            title="🏆 Лидерборд рекрутеров EGO",
+            description=(
+                f"## 📊 ТОП-{min(10, len(top))} рекрутеров\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📈 **Всего тикетов закрыто:** {total_tickets}\n"
+                f"⭐ **Средняя оценка клана:** {avg_all:.1f}/5\n"
+                f"👥 **Активных рекрутеров:** {len(top)}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                + "\n\n".join(lines)
+            ),
+            footer_text=f"EGODiscord System • {msk_timestamp()}",
+        )
+
         try:
             await ctx.send(embed=embed)
         except discord.HTTPException:
