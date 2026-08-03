@@ -70,14 +70,35 @@ def _is_staff(member: discord.Member, config: dict) -> bool:
     return member.guild_permissions.administrator
 
 
+# Кэш кулдауна: channel_id -> timestamp последнего edit (защита от 429 rate-limit)
+_CHANNEL_EDIT_COOLDOWN: dict[int, float] = {}
+
+
 async def _set_channel_emoji(channel: discord.TextChannel, new_emoji: str):
-    """Меняет первый эмодзи в названии канала на new_emoji."""
+    """Меняет первый эмодзи в названии канала на new_emoji.
+
+    Защита от rate-limit: не чаще одного раза в 10 секунд на канал.
+    Если эмодзи уже совпадает с текущим — пропускаем (no-op).
+    """
     name = channel.name
     parts = name.split("-", 1)
     if len(parts) == 2:
         new_name = f"{new_emoji}-{parts[1]}"
     else:
         new_name = f"{new_emoji}-ticket"
+
+    # No-op если имя уже такое
+    if new_name == name:
+        return
+
+    # Кулдаун: не чаще 10 сек на канал (защита от 429 rate-limit)
+    now = time.time()
+    last = _CHANNEL_EDIT_COOLDOWN.get(channel.id, 0)
+    if now - last < 10:
+        log.debug("Пропускаю _set_channel_emoji (кулдаун) для канала %s", channel.id)
+        return
+    _CHANNEL_EDIT_COOLDOWN[channel.id] = now
+
     try:
         await channel.edit(name=new_name)
     except discord.HTTPException as e:
@@ -286,10 +307,17 @@ async def _handle_claim(interaction: discord.Interaction, config: dict,
                     read_message_history=True, manage_channels=True,
                 )
 
-    try:
-        await interaction.channel.edit(overwrites=overwrites)
-    except discord.HTTPException as e:
-        log.warning("Не удалось обновить права канала после claim: %s", e)
+    # Кулдаун на edit канала (защита от 429)
+    now = time.time()
+    last = _CHANNEL_EDIT_COOLDOWN.get(interaction.channel.id, 0)
+    if now - last >= 5:
+        _CHANNEL_EDIT_COOLDOWN[interaction.channel.id] = now
+        try:
+            await interaction.channel.edit(overwrites=overwrites)
+        except discord.HTTPException as e:
+            log.warning("Не удалось обновить права канала после claim: %s", e)
+    else:
+        log.debug("Пропускаю edit overwrites (кулдаун) для канала %s", interaction.channel.id)
 
     # Записываем claim в БД
     await database.ticket_set_claimed(interaction.channel.id, interaction.user.id)

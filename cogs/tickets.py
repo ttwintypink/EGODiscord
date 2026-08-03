@@ -60,11 +60,21 @@ def _normalize_question(q: Any) -> dict:
             "is_steam": "steam" in q.lower(),
         }
     if isinstance(q, dict):
+        def _safe_int(v, default: int, lo: int = None, hi: int = None) -> int:
+            try:
+                v = int(v)
+            except (TypeError, ValueError):
+                v = default
+            if lo is not None:
+                v = max(lo, v)
+            if hi is not None:
+                v = min(hi, v)
+            return v
         return {
             "title": str(q.get("title", "Вопрос"))[:45],
             "subtitle": str(q.get("subtitle", ""))[:100],
-            "max_length": min(int(q.get("max_length", 500)), 4000),
-            "min_length": max(int(q.get("min_length", 0)), 0),
+            "max_length": _safe_int(q.get("max_length", 500), 500, 1, 4000),
+            "min_length": _safe_int(q.get("min_length", 0), 0, 0, 4000),
             "multiline": bool(q.get("multiline", False)),
             "required": bool(q.get("required", True)),
             "is_real_name": bool(q.get("is_real_name", False)),
