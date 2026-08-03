@@ -47,6 +47,11 @@ log = logging.getLogger(__name__)
 STEAM_API_BASE = "https://api.steampowered.com"
 STEAM_COMMUNITY = "https://steamcommunity.com"
 RUST_APP_ID = 252490
+# Spacewar (appid 480) — тестовое приложение Steam. Используется пиратскими
+# эмуляторами (Goldberg и др.) для запуска защищённых игр без лицензии.
+# Если у юзера есть Spacewar в библиотеке, но нет Rust — он почти наверняка
+# играет в пиратский Rust.
+SPACEWAR_APP_ID = 480
 
 # Константы конвертации SteamID
 STEAM64_BASE = 76561197960265728  # 0x0110000100000000
@@ -493,46 +498,93 @@ async def _scrape_vanity(session: aiohttp.ClientSession,
     return _parse_profile_html(html, url)
 
 
-async def _scrape_rust_hours(session: aiohttp.ClientSession,
-                              steamid: int) -> Optional[float]:
+async def _scrape_games_info(session: aiohttp.ClientSession,
+                              steamid: int) -> dict:
     """
-    Парсит страницу /games/{steamid} для поиска Rust (appid 252490).
+    Парсит страницу /games/{steamid} для поиска Rust (appid 252490)
+    и Spacewar (appid 480).
+
     ⚠️ Steam требует авторизацию для просмотра /games/ — обычно возвращает
     страницу логина. Этот метод сработает только если у пользователя
     публичный профиль И Steam передаёт игры в JS.
-    Возвращает часы в Rust (float) или None если не найдено.
+
+    Возвращает dict:
+        {
+          "rust_hours": float | None,
+          "has_rust": bool,
+          "has_spacewar": bool,
+          "spacewar_hours": float | None,
+        }
     """
+    empty = {
+        "rust_hours": None,
+        "has_rust": False,
+        "has_spacewar": False,
+        "spacewar_hours": None,
+    }
     url = f"{STEAM_COMMUNITY}/profiles/{steamid}/games/?tab=all"
     html = await _fetch_html(session, url)
     if not html:
-        return None
+        return empty
 
     # Если вернулась страница логина — выходим
     if '<title>Sign In</title>' in html or 'Please log in' in html:
         log.info("Steam /games/ требует логин — Rust playtime недоступен")
-        return None
+        return empty
 
+    result = dict(empty)
+
+    # Rust (appid 252490) — часы
     # Steam embeds all games as JSON in rgGames JS variable
     # Pattern: {"appid":252490,"name":"Rust","logo":...,"hours_forever":"123.4",...}
-    patterns = [
+    rust_patterns = [
         r'\{"appid":252490[^}]*"hours_forever":"([\d.,]+)"',
         r'\{"appid":252490[^}]*"hours_forever":([\d.]+)',
         r'\{"appid":252490[^}]*"playtime_forever":(\d+)',
         r'"appid":252490,"name":"Rust"[^}]*"hours_forever":"([\d.,]+)"',
     ]
-    for p in patterns:
+    for p in rust_patterns:
         m = re.search(p, html, re.S)
         if m:
             val = m.group(1).replace(",", ".")
             try:
                 hours = float(val)
                 if hours > 100000:
-                    return round(hours / 60, 1)
-                return round(hours, 1)
+                    hours = round(hours / 60, 1)
+                else:
+                    hours = round(hours, 1)
+                result["rust_hours"] = hours
+                result["has_rust"] = True
+                break
             except ValueError:
                 continue
 
-    return None
+    # Spacewar (appid 480) — пиратский эмулятор
+    sw_patterns = [
+        r'\{"appid":480[^}]*"hours_forever":"([\d.,]+)"',
+        r'\{"appid":480[^}]*"hours_forever":([\d.]+)',
+        r'\{"appid":480[^}]*"playtime_forever":(\d+)',
+        r'"appid":480,"name":"Spacewar"[^}]*"hours_forever":"([\d.,]+)"',
+    ]
+    for p in sw_patterns:
+        m = re.search(p, html, re.S)
+        if m:
+            val = m.group(1).replace(",", ".")
+            try:
+                hours = float(val)
+                if hours > 100000:
+                    hours = round(hours / 60, 1)
+                else:
+                    hours = round(hours, 1)
+                result["has_spacewar"] = True
+                result["spacewar_hours"] = hours
+            except ValueError:
+                pass
+            # Даже если не распарсили часы, но объект нашли — отметим как найденный
+            result["has_spacewar"] = True
+            break
+
+    return result
 
 
 # ============================================================================
@@ -607,6 +659,10 @@ async def check_steam_account(api_key: str, raw_input: str) -> dict:
         account_created: str              (дата создания)
         country_code: str | None
         currently_playing: str | None
+        is_pirate: bool                    (True если в библиотеке есть Spacewar,
+                                            но нет купленной Rust, либо сейчас
+                                            играет в Spacewar)
+        pirate_evidence: list[str]         (список найденных признаков пиратки)
         source: str                       ('api' | 'html' | 'mixed')
         error: str | None
     """
@@ -628,6 +684,10 @@ async def check_steam_account(api_key: str, raw_input: str) -> dict:
         "account_created": "—",
         "country_code": None,
         "currently_playing": None,
+        # Пиратка: True если в библиотеке есть Spacewar (appid 480), но нет
+        # купленной Rust (appid 252490), либо сейчас играет в Spacewar.
+        "is_pirate": False,
+        "pirate_evidence": [],
         "source": "unknown",
         "error": None,
     }
@@ -759,11 +819,22 @@ async def check_steam_account(api_key: str, raw_input: str) -> dict:
                 result["source"] = "html"
 
             # Пробуем получить часы в Rust через HTML /games/
-            if result["profile_state"] == "public" and result["hours_rust"] is None:
-                log.info("Парсим часы в Rust через HTML /games/")
-                rust_hours = await _scrape_rust_hours(session, sid)
-                if rust_hours is not None:
-                    result["hours_rust"] = rust_hours
+            if result["profile_state"] == "public":
+                log.info("Парсим игры через HTML /games/ (Rust + Spacewar)")
+                games_info = await _scrape_games_info(session, sid)
+                if games_info["rust_hours"] is not None:
+                    result["hours_rust"] = games_info["rust_hours"]
+                # Детект пиратки (HTML /games/)
+                if games_info["has_spacewar"] and not games_info["has_rust"]:
+                    if not result["is_pirate"]:
+                        result["is_pirate"] = True
+                    sw_h = games_info.get("spacewar_hours")
+                    sw_h_str = f" Часов в Spacewar: {sw_h:.1f}." if sw_h else ""
+                    result["pirate_evidence"].append(
+                        f"На странице /games/ найден Spacewar (appid "
+                        f"{SPACEWAR_APP_ID}), но Rust отсутствует.{sw_h_str} "
+                        f"Это типичный паттерн пиратского Rust."
+                    )
 
         elif used_api:
             result["source"] = "api" if result["source"] == "unknown" else "mixed"
@@ -771,10 +842,22 @@ async def check_steam_account(api_key: str, raw_input: str) -> dict:
             # Если API не дал часы (приватный) — пробуем HTML
             if result["hours_rust"] is None and result["profile_state"] == "public":
                 log.info("API не дал часы в Rust — пробуем HTML")
-                rust_hours = await _scrape_rust_hours(session, sid)
-                if rust_hours is not None:
-                    result["hours_rust"] = rust_hours
+                games_info = await _scrape_games_info(session, sid)
+                if games_info["rust_hours"] is not None:
+                    result["hours_rust"] = games_info["rust_hours"]
                     result["source"] = "mixed"
+                # Детект пиратки (HTML /games/) — даже если API дал часы
+                # (что вряд ли для пирата, но на всякий случай)
+                if games_info["has_spacewar"] and not games_info["has_rust"]:
+                    if not result["is_pirate"]:
+                        result["is_pirate"] = True
+                    sw_h = games_info.get("spacewar_hours")
+                    sw_h_str = f" Часов в Spacewar: {sw_h:.1f}." if sw_h else ""
+                    result["pirate_evidence"].append(
+                        f"На странице /games/ найден Spacewar (appid "
+                        f"{SPACEWAR_APP_ID}), но Rust отсутствует.{sw_h_str} "
+                        f"Это типичный паттерн пиратского Rust."
+                    )
 
         # ── Финализация ────────────────────────────────────────────────────────
         result["last_seen"] = _format_last_seen(result["last_logoff"])
@@ -811,6 +894,36 @@ def _fill_from_api(result: dict, summaries: dict, bans: dict, games: dict) -> No
         # playtime_forever в минутах
         result["hours_rust"] = round(rust.get("playtime_forever", 0) / 60, 1)
 
+    # ── Детект пиратки ────────────────────────────────────────────────────────
+    # Spacewar (appid 480) — тестовое приложение Steam. Пиратские эмуляторы
+    # (Goldberg и др.) подменяют appid лицензионной игры на 480, чтобы обойти
+    # проверки Steam. Если у юзера есть Spacewar, но НЕТ купленной Rust —
+    # почти наверняка он играет в пиратский Rust.
+    # Если Rust в библиотеке есть — он лицензионщик, Spacewar игнорируем.
+    has_rust = RUST_APP_ID in games
+    has_spacewar = SPACEWAR_APP_ID in games
+    if has_spacewar and not has_rust:
+        result["is_pirate"] = True
+        sw = games.get(SPACEWAR_APP_ID, {})
+        playtime_min = sw.get("playtime_forever", 0)
+        playtime_h = round(playtime_min / 60, 1) if playtime_min else 0
+        result["pirate_evidence"].append(
+            f"В библиотеке есть Spacewar (appid {SPACEWAR_APP_ID}) — "
+            f"тестовое приложение Steam, которое пираты используют для "
+            f"запуска Rust без лицензии. Часов в Spacewar: {playtime_h:.1f}. "
+            f"Купленной Rust в библиотеке нет."
+        )
+
+    # Если сейчас играет в Spacewar — дополнительный маркер
+    playing_now = result.get("currently_playing") or ""
+    if playing_now.strip().lower() == "spacewar":
+        if not result["is_pirate"]:
+            result["is_pirate"] = True
+        result["pirate_evidence"].append(
+            "Сейчас играет в Spacewar — игра, видимая в профиле при запуске "
+            "пиратского Rust через эмулятор Steam."
+        )
+
 
 def _fill_from_scrape(result: dict, scraped: dict) -> None:
     """Заполняет result данными из HTML-скрейпинга."""
@@ -836,3 +949,14 @@ def _fill_from_scrape(result: dict, scraped: dict) -> None:
         result["steamid"] = scraped["steamid"]
     if scraped.get("profile_url") and not result.get("profile_url"):
         result["profile_url"] = scraped["profile_url"]
+
+    # ── Детект пиратки (HTML-режим) ───────────────────────────────────────────
+    # В HTML-режиме без API ключа мы не видим owned_games, но если юзер
+    # сейчас играет в Spacewar — это явный признак пиратки.
+    playing = (scraped.get("currently_playing") or "").strip().lower()
+    if playing == "spacewar":
+        result["is_pirate"] = True
+        result["pirate_evidence"].append(
+            "Сейчас играет в Spacewar — игра, видимая в профиле при запуске "
+            "пиратского Rust через эмулятор Steam."
+        )

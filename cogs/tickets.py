@@ -31,6 +31,7 @@ from utils import embeds
 from utils.embeds import (
     build_main, build_success, build_error, build_warning, build_info,
     msk_timestamp, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, COLOR_MAIN,
+    COLOR_PIRATE,
 )
 from utils.steam_api import check_steam_account
 
@@ -506,6 +507,7 @@ class ApplicationModal(ui.Modal):
                     "▸ Запрос к Steam API ........ ожидание\n"
                     "▸ Проверка VAC-банов ........ ожидание\n"
                     "▸ Подсчёт часов в Rust ...... ожидание\n"
+                    "▸ Поиск пиратки (Spacewar) .. ожидание\n"
                     "```\n"
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     "⏱️ Обычно занимает 3–8 секунд."
@@ -570,6 +572,8 @@ class ApplicationModal(ui.Modal):
         community_banned = bool(result.get("community_banned"))
         profile_state = result.get("profile_state", "public")
         hours_rust = result.get("hours_rust")
+        is_pirate = bool(result.get("is_pirate"))
+        pirate_evidence = result.get("pirate_evidence") or []
 
         if vac_banned or community_banned:
             color = COLOR_ERROR
@@ -580,6 +584,12 @@ class ApplicationModal(ui.Modal):
             else:
                 status_text = "🔴 Community-бан"
             risk_emoji = "⚠️"
+        elif is_pirate:
+            # Пиратка (Spacewar вместо купленной Rust) — оранжевый цвет.
+            # Бан важнее, но пирата мы тоже берём — просто с жёстким ограничением.
+            color = COLOR_PIRATE
+            status_text = "🏴‍☠️ Пират (Spacewar)"
+            risk_emoji = "🏴‍☠️"
         elif profile_state == "private":
             color = COLOR_WARNING
             status_text = "🟡 Профиль приватный"
@@ -652,6 +662,8 @@ class ApplicationModal(ui.Modal):
 
         if vac_banned or community_banned:
             title = "🚨 ОБНАРУЖЕН БАН!"
+        elif is_pirate:
+            title = "🏴‍☠️ ОБНАРУЖЕН ПИРАТ!"
         elif profile_state == "private":
             title = "🛡️ Профиль приватный"
         elif source == "html":
@@ -664,6 +676,15 @@ class ApplicationModal(ui.Modal):
             f"Аккаунт кандидата {self.user.mention} проверен.\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
+
+        if is_pirate:
+            description += (
+                "\n\n🏴‍☠️ **Обнаружена пиратская версия Rust!**\n"
+                "Кандидат играет через **Spacewar** (тестовое приложение Steam, "
+                "которое пираты используют для запуска Rust без лицензии).\n"
+                "⚠️ **Принимать с жёстким ограничением** — на усмотрение "
+                "лидерства, после дополнительной проверки."
+            )
 
         if source == "html" and not api_key:
             description += (
@@ -706,6 +727,18 @@ class ApplicationModal(ui.Modal):
                 name="⏰ Дней с последнего бана",
                 value=f"**{days_ban}** дн.",
                 inline=True,
+            )
+
+        # ── Признаки пиратки ──────────────────────────────────────────────────
+        if is_pirate and pirate_evidence:
+            # Объединяем все признаки в одно поле (лимит 1024 символа)
+            evidence_text = "\n".join(f"• {e}" for e in pirate_evidence)
+            if len(evidence_text) > 1000:
+                evidence_text = evidence_text[:1000] + "\n…(обрезано)"
+            embed.add_field(
+                name="🏴‍☠️ Признаки пиратки",
+                value=evidence_text,
+                inline=False,
             )
 
         avatar = result.get("avatar")

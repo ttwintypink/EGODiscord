@@ -20,6 +20,7 @@ COLOR_MAIN    = 0x5865F2   # мягкий фиолетовый
 COLOR_SUCCESS = 0x57F287   # мягкий зелёный
 COLOR_ERROR   = 0xED4245   # мягкий красный
 COLOR_WARNING = 0xFEE75C   # жёлтый (используем более читаемый FEE75C, а не F1C40F)
+COLOR_PIRATE  = 0xE67E22   # оранжевый — пиратка (Spacewar вместо купленной Rust)
 
 FOOTER_TEXT = "EGODiscord System"
 
