@@ -201,24 +201,38 @@ async def _handle_claim(interaction: discord.Interaction, config: dict,
         except discord.HTTPException:
             pass
 
-    # Пишем «Тикет взят в работу»
-    await interaction.followup.send(
-        embed=build_success(
-            title="🤝 Тикет взят в работу",
-            description=(
-                f"## ✅ Заявка принята\n\n"
-                f"Модератор **{interaction.user.mention}** взял тикет в работу.\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📞 Следующий шаг — голосовой обзвон.\n"
-                f"⏳ Пожалуйста, оставайтесь онлайн и следите за уведомлениями."
-            ),
-            fields=[
-                ("👤 Модератор", interaction.user.mention, True),
-                ("⏱️ Время", msk_timestamp(), True),
-            ],
-            footer_text="EGODiscord System • Ожидайте голосового вызова",
-        )
+    # Пишем «Тикет взят в работу» — премиум-embed
+    claim_embed = discord.Embed(
+        title="🤝 Тикет взят в работу",
+        description=(
+            f"## ✅ Заявка принята\n\n"
+            f"Модератор **{interaction.user.mention}** взял тикет в работу.\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"### 📞 Следующий шаг — голосовой обзвон\n"
+            f"⏳ Пожалуйста, оставайтесь онлайн и следите за уведомлениями.\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=COLOR_SUCCESS,
+        timestamp=now_msk(),
     )
+    claim_embed.add_field(
+        name="👤 Модератор",
+        value=f"{interaction.user.mention}\n`{interaction.user.id}`",
+        inline=True,
+    )
+    claim_embed.add_field(
+        name="⏱️ Время",
+        value=msk_timestamp(),
+        inline=True,
+    )
+    claim_embed.add_field(
+        name="📊 Статус",
+        value="🟡 Ожидание голосового обзвона",
+        inline=True,
+    )
+    claim_embed.set_thumbnail(url=interaction.user.display_avatar.url)
+    claim_embed.set_footer(text="EGODiscord System • Ожидайте голосового вызова")
+    await interaction.followup.send(embed=claim_embed)
 
 
 async def _handle_call(interaction: discord.Interaction, config: dict):
@@ -322,14 +336,33 @@ async def _create_voice_channel(interaction: discord.Interaction,
         log.warning("Не удалось создать приглашение: %s", e)
         invite = None
 
-    embed = build_main(
-        title="🎙️ Обзвон",
+    # Премиум-embed голосового обзвона
+    embed = discord.Embed(
+        title="🎙️ Голосовой обзвон создан",
         description=(
-            f"Создан голосовой канал: {vc.mention}\n\n"
-            f"Кандидат: {user.mention if user else '—'}\n"
-            f"⏱️ Канал будет автоматически удалён, если останется пустым более 30 минут."
+            f"## 📞 Канал обзвона готов\n\n"
+            f"Кандидат и модераторы могут подключиться по кнопке ниже.\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
+        color=COLOR_MAIN,
+        timestamp=now_msk(),
     )
+    embed.add_field(
+        name="📢 Канал",
+        value=vc.mention,
+        inline=True,
+    )
+    embed.add_field(
+        name="👤 Кандидат",
+        value=user.mention if user else "—",
+        inline=True,
+    )
+    embed.add_field(
+        name="⏱️ Авто-удаление",
+        value="30 мин. после пустого",
+        inline=True,
+    )
+    embed.set_footer(text="EGODiscord System • Voice Interview")
 
     view = ui.View(timeout=None)
     if invite:
@@ -627,23 +660,52 @@ async def _perform_close(interaction: discord.Interaction, config: dict,
         for m in last_msgs
     ) if last_msgs else "Сообщений не найдено."
 
-    # 6. Отправляем кандидату в ЛС
+    # 6. Отправляем кандидату в ЛС — премиум-embed
     dm_sent = False
     rating_recruiter_id = closer.id
     if user:
         try:
             dm = await user.create_dm()
-            status_emoji = "✅ Принят" if decision == "accepted" else "❌ Отклонён"
-            dm_embed = build_main(
+            accepted = decision == "accepted"
+            status_emoji = "✅ Принят" if accepted else "❌ Отклонён"
+            color = COLOR_SUCCESS if accepted else COLOR_ERROR
+
+            dm_embed = discord.Embed(
                 title=f"🎫 Ваша заявка EGO — {status_emoji}",
                 description=(
-                    f"Здравствуйте, {user.mention}!\n\n"
+                    f"## 👋 Здравствуйте, {user.mention}!\n\n"
                     f"Ваша заявка была **{status_emoji.lower()}**.\n"
-                    f"**Модератор:** {closer.mention}\n"
-                    f"**Причина:** {reason}\n\n"
-                    f"**Последние сообщения из тикета:**\n{last_msgs_text[:1500]}"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 ),
+                color=color,
+                timestamp=now_msk(),
             )
+            dm_embed.add_field(
+                name="👤 Модератор",
+                value=f"{closer.mention}\n`{closer.id}`",
+                inline=True,
+            )
+            dm_embed.add_field(
+                name="📝 Причина",
+                value=reason[:1024],
+                inline=False,
+            )
+            dm_embed.add_field(
+                name="💬 Последние сообщения из тикета",
+                value=last_msgs_text[:1024] if last_msgs_text else "—",
+                inline=False,
+            )
+            if accepted:
+                dm_embed.add_field(
+                    name="🎉 Дальнейшие шаги",
+                    value=(
+                        "Вам выдана роль **EGO**. Поздравляем!\n"
+                        "Следите за каналами клана и присоединяйтесь к активности."
+                    ),
+                    inline=False,
+                )
+            dm_embed.set_thumbnail(url=closer.display_avatar.url)
+            dm_embed.set_footer(text="EGODiscord System • Оцените работу рекрутёра ниже ⭐")
             rating_view = RatingView(config, rating_recruiter_id)
             await dm.send(embed=dm_embed, view=rating_view)
             dm_sent = True
@@ -726,21 +788,63 @@ async def _perform_close(interaction: discord.Interaction, config: dict,
     except Exception as e:
         log.exception("Ошибка сохранения TXT: %s", e)
 
-    # 9. Отправляем в лог-канал
+    # 9. Отправляем в лог-канал — премиум-embed
     log_channel_id = config.get("log_channel_id")
     log_channel = guild.get_channel(log_channel_id) if log_channel_id else None
     if log_channel and isinstance(log_channel, discord.TextChannel):
-        status_text = "✅ Принят" if decision == "accepted" else "❌ Отклонён"
-        log_embed = build_main(
+        accepted = decision == "accepted"
+        status_text = "✅ Принят" if accepted else "❌ Отклонён"
+        color = COLOR_SUCCESS if accepted else COLOR_ERROR
+
+        log_embed = discord.Embed(
             title=f"📜 Тикет закрыт — {status_text}",
             description=(
-                f"**Канал:** #{channel.name}\n"
-                f"**Кандидат:** {user.mention if user else user_id}\n"
-                f"**Закрыл:** {closer.mention}\n"
-                f"**Причина:** {reason}\n"
-                f"**Время:** {msk_timestamp()}"
+                f"## {status_text}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             ),
+            color=color,
+            timestamp=now_msk(),
         )
+        log_embed.add_field(
+            name="📢 Канал",
+            value=f"#{channel.name}\n`{channel.id}`",
+            inline=True,
+        )
+        log_embed.add_field(
+            name="👤 Кандидат",
+            value=f"{user.mention if user else '—'}\n`{user_id}`",
+            inline=True,
+        )
+        log_embed.add_field(
+            name="🛡️ Закрыл",
+            value=f"{closer.mention}\n`{closer.id}`",
+            inline=True,
+        )
+        log_embed.add_field(
+            name="📝 Причина",
+            value=reason[:1024],
+            inline=False,
+        )
+        log_embed.add_field(
+            name="⏱️ Время",
+            value=msk_timestamp(),
+            inline=True,
+        )
+        type_label = "🛡️ Клан" if ticket["type"] == "clan" else "👑 Модерация"
+        log_embed.add_field(
+            name="📂 Тип",
+            value=type_label,
+            inline=True,
+        )
+        if accepted:
+            log_embed.add_field(
+                name="🎉 Роль",
+                value=f"Выдана <@&{config.get('accept_role_id', 0)}>",
+                inline=True,
+            )
+        log_embed.set_thumbnail(url=closer.display_avatar.url)
+        log_embed.set_footer(text="EGODiscord System • Ticket Log")
+
         restore_view = RestoreTicketView(config)
         files = []
         if html_path:
@@ -825,27 +929,44 @@ async def _handle_rating(interaction: discord.Interaction, recruiter_id: int, st
     except Exception as e:
         log.warning("Не удалось записать оценку: %s", e)
 
-    # Дизаблим все кнопки в сообщении
-    view = RatingView({}, recruiter_id) if False else None  # не создаём новую View
+    # Премиум-embed с благодарностью + визуальная шкала звёзд
+    star_bar = "⭐" * stars + "⚫" * (5 - stars)
+    if stars >= 5:
+        verdict = "🔥 Идеально! Спасибо за высокую оценку!"
+        color = COLOR_SUCCESS
+    elif stars >= 4:
+        verdict = "😊 Отлично! Будем стараться ещё лучше."
+        color = COLOR_SUCCESS
+    elif stars >= 3:
+        verdict = "🤔 Нормально. Учтём ваши замечания."
+        color = COLOR_WARNING
+    else:
+        verdict = "😢 Жаль, что не понравилось. Мы разберёмся."
+        color = COLOR_ERROR
+
+    rating_embed = discord.Embed(
+        title="⭐ Спасибо за оценку!",
+        description=(
+            f"## {star_bar}\n\n"
+            f"Вы оценили работу рекрутёра на **{stars}/5**.\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{verdict}"
+        ),
+        color=color,
+        timestamp=now_msk(),
+    )
+    rating_embed.set_footer(text="EGODiscord System • Rating System")
+
     try:
-        # Просто обновляем embed и убираем view (кнопки)
+        # Обновляем исходное сообщение — убираем кнопки, показываем благодарность
         await interaction.response.edit_message(
             view=None,
-            embed=build_success(
-                title="⭐ Спасибо за оценку!",
-                description=f"Вы оценили сервис на **{stars}** из 5 звёзд.",
-            )
+            embed=rating_embed,
         )
     except discord.HTTPException:
         # Если response уже отправлен — используем followup
         try:
-            await interaction.followup.send(
-                embed=build_success(
-                    title="⭐ Спасибо за оценку!",
-                    description=f"Вы оценили сервис на **{stars}** из 5 звёзд.",
-                ),
-                ephemeral=True,
-            )
+            await interaction.followup.send(embed=rating_embed, ephemeral=True)
         except discord.HTTPException:
             pass
 
@@ -993,17 +1114,44 @@ async def _restore_ticket(interaction: discord.Interaction, config: dict):
     form_text = txt_content or "Анкета восстановлена из логов."
     await database.ticket_create(new_channel.id, user_id, ticket_type, form_text)
 
-    # Отправляем сообщение о восстановлении
-    restore_embed = build_main(
+    # Премиум-embed восстановления
+    restore_embed = discord.Embed(
         title="♻️ Тикет восстановлен",
         description=(
-            f"Этот тикет был восстановлен из логов.\n\n"
-            f"**Кандидат:** {user_member.mention if user_member else f'`{user_id}`'}\n"
-            f"**Исходный канал:** `{original_channel_id}`\n"
-            f"**Восстановил:** {interaction.user.mention}\n"
-            f"**Время:** {msk_timestamp()}"
+            f"## 🔄 Этот тикет был восстановлен из логов\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
+        color=COLOR_MAIN,
+        timestamp=now_msk(),
     )
+    restore_embed.add_field(
+        name="👤 Кандидат",
+        value=user_member.mention if user_member else f"`{user_id}`",
+        inline=True,
+    )
+    restore_embed.add_field(
+        name="📢 Исходный канал",
+        value=f"`{original_channel_id}`",
+        inline=True,
+    )
+    restore_embed.add_field(
+        name="🛡️ Восстановил",
+        value=interaction.user.mention,
+        inline=True,
+    )
+    restore_embed.add_field(
+        name="⏱️ Время",
+        value=msk_timestamp(),
+        inline=True,
+    )
+    type_label = "🛡️ Клан" if ticket_type == "clan" else "👑 Модерация"
+    restore_embed.add_field(
+        name="📂 Тип",
+        value=type_label,
+        inline=True,
+    )
+    restore_embed.set_thumbnail(url=interaction.user.display_avatar.url)
+    restore_embed.set_footer(text="EGODiscord System • Ticket Restored")
 
     control_view = TicketControlView(config)
     try:
@@ -1048,16 +1196,12 @@ async def _restore_ticket(interaction: discord.Interaction, config: dict):
         ephemeral=True,
     )
 
-    # Отключаем кнопку «Восстановить» в логах
-    button.disabled = True
-    try:
-        await interaction.message.edit(view=interaction.message.components[0] if interaction.message.components else None)
-    except discord.HTTPException:
-        pass
+    # Отключаем кнопку «Восстановить» в логах — заменяем View на пустую,
+    # чтобы кнопку больше нельзя было нажать (избегаем дубликатов).
     try:
         await interaction.message.edit(view=None)
-    except discord.HTTPException:
-        pass
+    except discord.HTTPException as e:
+        log.warning("Не удалось убрать кнопку Restore: %s", e)
 
 
 # ============================================================================
@@ -1130,20 +1274,35 @@ class TicketControl(commands.Cog):
                     pass
             await database.ticket_delete(ch_id)
 
-        # Уведомляем в лог-канал
+        # Уведомляем в лог-канал — премиум-embed
         config = _get_config(self.bot)
         log_channel_id = config.get("log_channel_id")
         if log_channel_id:
             log_channel = member.guild.get_channel(log_channel_id)
             if log_channel and isinstance(log_channel, discord.TextChannel):
                 try:
-                    await log_channel.send(embed=build_warning(
+                    leave_embed = discord.Embed(
                         title="🚪 Пользователь покинул сервер",
                         description=(
-                            f"Пользователь {member} ({member.id}) покинул сервер.\n"
-                            f"Удалено активных тикетов: **{len(channels)}**."
+                            f"## 👋 {member} покинул сервер\n\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                         ),
-                    ))
+                        color=COLOR_WARNING,
+                        timestamp=now_msk(),
+                    )
+                    leave_embed.add_field(
+                        name="👤 Пользователь",
+                        value=f"{member.mention}\n`{member.id}`",
+                        inline=True,
+                    )
+                    leave_embed.add_field(
+                        name="🎫 Удалено тикетов",
+                        value=f"**{len(channels)}**",
+                        inline=True,
+                    )
+                    leave_embed.set_thumbnail(url=member.display_avatar.url)
+                    leave_embed.set_footer(text="EGODiscord System • Member Remove")
+                    await log_channel.send(embed=leave_embed)
                 except discord.HTTPException:
                     pass
 
@@ -1196,16 +1355,22 @@ class TicketControl(commands.Cog):
                     if channel is None:
                         continue
                     try:
+                        warn_embed = discord.Embed(
+                            title="⏰ Предупреждение о неактивности",
+                            description=(
+                                f"## ⚠️ Тикет без активности более 24 часов\n\n"
+                                f"Кандидат <@{t['user_id']}>, пожалуйста, оставьте сообщение.\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"🔒 Тикет будет **закрыт автоматически через 1 час**, "
+                                f"если вы не оставите сообщение."
+                            ),
+                            color=COLOR_WARNING,
+                            timestamp=now_msk(),
+                        )
+                        warn_embed.set_footer(text="EGODiscord System • Anti-Inactivity")
                         await channel.send(
                             content=f"<@{t['user_id']}>",
-                            embed=build_warning(
-                                title="⏰ Предупреждение о неактивности",
-                                description=(
-                                    f"В тикете нет активности более 24 часов.\n"
-                                    f"Тикет будет закрыт автоматически через **1 час**, "
-                                    f"если вы не оставите сообщение."
-                                ),
-                            ),
+                            embed=warn_embed,
                         )
                         await database.ticket_set_warned(t["channel_id"], True)
                     except discord.HTTPException as e:
@@ -1325,16 +1490,21 @@ class TicketControl(commands.Cog):
                             for rid in [roles_cfg.get(key)] if rid
                         )
                     try:
+                        reminder_embed = discord.Embed(
+                            title="⚠️ Заявка ожидает рассмотрения!",
+                            description=(
+                                f"## 🚨 Тикет без внимания более 30 минут\n\n"
+                                f"Кандидат <@{t['user_id']}> ждёт.\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"👇 Нажмите кнопку **🤝 Взять в работу** в закрепе."
+                            ),
+                            color=COLOR_WARNING,
+                            timestamp=now_msk(),
+                        )
+                        reminder_embed.set_footer(text="EGODiscord System • Claim Reminder")
                         await channel.send(
                             content=ping_str or None,
-                            embed=build_warning(
-                                title="⚠️ Заявка ожидает рассмотрения!",
-                                description=(
-                                    f"Тикет создан более 30 минут назад, но ещё не взят в работу.\n"
-                                    f"Кандидат: <@{t['user_id']}>\n"
-                                    f"Пожалуйста, нажмите кнопку **🤝 Взять в работу**."
-                                ),
-                            ),
+                            embed=reminder_embed,
                             allowed_mentions=AllowedMentions(roles=True, users=False, everyone=False),
                         )
                     except discord.HTTPException as e:

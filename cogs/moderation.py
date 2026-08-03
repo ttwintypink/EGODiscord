@@ -94,12 +94,20 @@ class EditQuestionsModal(ui.Modal, title="⚙️ Изменение вопрос
             )
             return
 
-        embed = build_success(
+        type_label = "🛡️ Клан" if self.ticket_type == "clan" else "👑 Модерация"
+        preview = "\n".join(f"**{i+1}.** {q}" for i, q in enumerate(new_questions)) or "—"
+        embed = discord.Embed(
             title="✅ Вопросы обновлены",
-            description=f"Тип: **{'Клан' if self.ticket_type == 'clan' else 'Модерация'}**\n"
-                        f"Количество вопросов: **{len(new_questions)}**",
-            fields=[("Вопросы", "\n".join(f"{i+1}. {q}" for i, q in enumerate(new_questions)) or "—", False)],
+            description=(
+                f"## 📝 {type_label}\n\n"
+                f"Количество вопросов: **{len(new_questions)}**\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=0x57F287,
+            timestamp=embeds.now_msk(),
         )
+        embed.add_field(name="Новые вопросы", value=preview, inline=False)
+        embed.set_footer(text="EGODiscord System • Editor")
         try:
             await interaction.response.send_message(embed=embed)
         except discord.HTTPException:
@@ -123,15 +131,32 @@ class Moderation(commands.Cog):
     @commands.group(name="blacklist", invoke_without_command=True)
     @commands.guild_only()
     async def blacklist_grp(self, ctx: commands.Context):
-        embed = build_info(
+        embed = discord.Embed(
             title="🚫 Blacklist — управление",
-            description="Команды для управления чёрным списком пользователей.",
-            fields=[
-                ("`.blacklist add <ID>`", "Добавить пользователя в чёрный список", False),
-                ("`.blacklist remove <ID>`", "Удалить пользователя из чёрного списка", False),
-                ("`.blacklist list`", "Показать список заблокированных", False),
-            ],
+            description=(
+                "## 🛡️ Управление чёрным списком\n\n"
+                "Команды для управления чёрным списком пользователей.\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=0x5865F2,
+            timestamp=embeds.now_msk(),
         )
+        embed.add_field(
+            name="➕ Добавить",
+            value="`.blacklist add <ID>`\nДобавить пользователя в ЧС",
+            inline=False,
+        )
+        embed.add_field(
+            name="➖ Удалить",
+            value="`.blacklist remove <ID>`\nУдалить пользователя из ЧС",
+            inline=False,
+        )
+        embed.add_field(
+            name="📋 Список",
+            value="`.blacklist list`\nПоказать всех заблокированных",
+            inline=False,
+        )
+        embed.set_footer(text="EGODiscord System • Blacklist")
         try:
             await ctx.send(embed=embed)
         except discord.HTTPException:
@@ -296,19 +321,21 @@ class Moderation(commands.Cog):
                 f"   ┗ ⚡ Реакция: **{reaction_str}**"
             )
 
-        embed = build_main(
+        embed = discord.Embed(
             title="🏆 Лидерборд рекрутеров EGO",
             description=(
                 f"## 📊 ТОП-{min(10, len(top))} рекрутеров\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📈 **Всего тикетов закрыто:** {total_tickets}\n"
                 f"⭐ **Средняя оценка клана:** {avg_all:.1f}/5\n"
                 f"👥 **Активных рекрутеров:** {len(top)}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 + "\n\n".join(lines)
             ),
-            footer_text=f"EGODiscord System • {msk_timestamp()}",
+            color=0x5865F2,
+            timestamp=embeds.now_msk(),
         )
+        embed.set_footer(text=f"EGODiscord System • {msk_timestamp()}")
 
         try:
             await ctx.send(embed=embed)
@@ -319,16 +346,28 @@ class Moderation(commands.Cog):
     @commands.command(name="setup-voprosy")
     @commands.guild_only()
     async def setup_voprosy(self, ctx: commands.Context):
-        """Открывает форму для админов, чтобы изменить вопросы для анкеты."""
+        """
+        Открывает форму для админов, чтобы изменить вопросы для анкеты.
+        Совет: используйте `.editor` для полноценного дашборда настройки.
+        """
         if not _is_admin(ctx.author, self._config()):
             await ctx.send(embed=embeds.error_no_permission())
             return
 
         view = ChooseQuestionsTypeView(self._config())
-        embed = build_main(
+        embed = discord.Embed(
             title="⚙️ Изменение вопросов анкеты",
-            description="Выберите, для какого типа заявок изменить вопросы.",
+            description=(
+                "## 📝 Выберите тип заявок\n\n"
+                "Выберите, для какого типа заявок изменить вопросы.\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💡 **Совет:** используйте `.editor` для полноценного дашборда "
+                f"с всеми настройками бота."
+            ),
+            color=0x5865F2,
+            timestamp=embeds.now_msk(),
         )
+        embed.set_footer(text="EGODiscord System • Question Editor")
         try:
             await ctx.send(embed=embed, view=view)
         except discord.HTTPException:

@@ -55,7 +55,21 @@ def load_config() -> dict:
         log.error("config.json не найден! Создайте его по образцу из README.")
         sys.exit(1)
     with open(cfg_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        cfg = json.load(f)
+
+    # Переопределения из переменных окружения (для прод-хостинга).
+    # Переменная окружения имеет приоритет над config.json — это позволяет
+    # хранить секреты вне репозитория.
+    env_steam_key = os.environ.get("STEAM_API_KEY", "").strip()
+    if env_steam_key:
+        cfg["steam_api_key"] = env_steam_key
+        log.info("Steam API ключ загружен из переменной окружения STEAM_API_KEY.")
+
+    env_dev_id = os.environ.get("DEVELOPER_ID", "").strip()
+    if env_dev_id.isdigit():
+        cfg["developer_id"] = int(env_dev_id)
+
+    return cfg
 
 
 CONFIG = load_config()
@@ -122,23 +136,50 @@ async def on_command_error(ctx: commands.Context, error: Exception):
             embed = discord.Embed(
                 title="📋 Команды EGO System",
                 description=(
-                    "Префикс команд: **`.`**\n\n"
-                    "**🎫 Тикеты:**\n"
-                    "`.setup` — установить панель тикетов *(только разработчик)*\n\n"
-                    "**👑 Модерация:**\n"
-                    "`.blacklist add @user` — добавить в ЧС\n"
-                    "`.blacklist remove @user` — убрать из ЧС\n"
-                    "`.blacklist list` — список ЧС\n"
-                    "`.stats` — ТОП рекрутеров\n"
-                    "`.setup-voprosy` — изменить вопросы анкеты\n\n"
-                    "**📞 Для разработчика (внутри тикета):**\n"
-                    "`.call <текст>` — написать кандидату в ЛС\n"
-                    "`.voice` — создать голосовой канал обзвона"
+                    "## 🛡️ EGODiscord System — справка\n\n"
+                    f"Префикс команд: **`.`**\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 ),
                 color=0x5865F2,
                 timestamp=discord.utils.utcnow(),
             )
-            embed.set_footer(text="EGODiscord System")
+            embed.add_field(
+                name="🎫 Тикеты",
+                value=(
+                    "`.setup` — установить панель тикетов "
+                    "*(только разработчик)*"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="⚙️ Настройка бота",
+                value=(
+                    "`.editor` — **интерактивный дашборд** всех настроек "
+                    "(вопросы, текст панели, Steam-ключ, роли, каналы)\n"
+                    "`.setup-voprosy` — быстро изменить вопросы анкеты "
+                    "*(админы)*"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="🚫 Модерация",
+                value=(
+                    "`.blacklist add @user` — добавить в ЧС\n"
+                    "`.blacklist remove @user` — убрать из ЧС\n"
+                    "`.blacklist list` — список ЧС\n"
+                    "`.stats` — ТОП рекрутеров"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="📞 Для разработчика (внутри тикета)",
+                value=(
+                    "`.call <текст>` — написать кандидату в ЛС\n"
+                    "`.voice` — создать голосовой канал обзвона"
+                ),
+                inline=False,
+            )
+            embed.set_footer(text="EGODiscord System • .help")
             try:
                 await ctx.send(embed=embed)
             except discord.HTTPException:
@@ -184,6 +225,7 @@ INITIAL_COGS = [
     "cogs.ticket_control",
     "cogs.moderation",
     "cogs.developer",
+    "cogs.editor",
 ]
 
 
@@ -246,10 +288,11 @@ async def main():
 
 
 if __name__ == "__main__":
-    # На Windows предотвращаем ошибку с ProactorEventLoop
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
+    # На Windows раньше нужен был WindowsSelectorEventLoopPolicy, чтобы aiohttp
+    # корректно работал. В Python 3.14 эта политика объявлена deprecated, а
+    # современный aiohttp (3.10+) отлично работает на дефолтном ProactorEventLoop.
+    # Поэтому политику НЕ меняем — пусть используется системная по умолчанию.
+    # Это убирает DeprecationWarning: "The WindowsSelectorEventLoopPolicy is deprecated".
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

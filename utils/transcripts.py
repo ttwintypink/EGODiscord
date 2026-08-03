@@ -2,7 +2,8 @@
 utils/transcripts.py — Генерация HTML-транскриптов в стиле TicketTool.
 
 Создаёт красивый статичный HTML-файл с:
-    - Шапкой с информацией о тикете (ID канала, пользователь, даты)
+    - Бренд-баром EGO сверху
+    - Шапкой с информацией о тикете (ID канала, пользователь, даты, тип)
     - Лентой сообщений с аватарками, никами, цветами ролей, timestamp
     - Подсветкой кода и форматированием Markdown (минимально)
     - Встроенным CSS (без внешних зависимостей)
@@ -21,16 +22,21 @@ from utils.embeds import msk_timestamp, now_msk
 # Константы цветов в CSS (соответствуют палитре)
 CSS_COLORS = {
     "main": "#5865F2",
+    "main_dark": "#4752C4",
     "success": "#57F287",
     "error": "#ED4245",
     "warning": "#FEE75C",
-    "bg": "#313338",
+    "bg": "#1e1f22",
     "bg_card": "#2b2d31",
-    "bg_hover": "#1e1f22",
+    "bg_hover": "#313338",
+    "bg_deep": "#18191c",
     "text_primary": "#f2f3f5",
     "text_muted": "#949ba4",
+    "text_dim": "#80848e",
     "border": "#1e1f22",
+    "border_light": "#3f4147",
     "accent_blue": "#5865F2",
+    "shadow_main": "rgba(88, 101, 242, 0.4)",
 }
 
 
@@ -52,19 +58,20 @@ def _format_markdown_lite(text: str) -> str:
     """
     if not text:
         return ""
+    import re
     s = _esc(text)
     # bold
-    s = __re_sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
+    s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
     # italic (single *)
-    s = __re_sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", s)
+    s = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", s)
     # underline
-    s = __re_sub(r"__([^_]+)__", r"<u>\1</u>", s)
+    s = re.sub(r"__([^_]+)__", r"<u>\1</u>", s)
     # code
-    s = __re_sub(r"`([^`]+)`", r"<code>\1</code>", s)
+    s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
     # spoiler
-    s = __re_sub(r"\|\|([^|]+)\|\|", r'<span class="spoiler">\1</span>', s)
+    s = re.sub(r"\|\|([^|]+)\|\|", r'<span class="spoiler">\1</span>', s)
     # URLs
-    s = __re_sub(
+    s = re.sub(
         r"(https?://[^\s<]+)",
         r'<a href="\1" target="_blank" rel="noopener">\1</a>',
         s,
@@ -72,11 +79,6 @@ def _format_markdown_lite(text: str) -> str:
     # newlines
     s = s.replace("\n", "<br>")
     return s
-
-
-def __re_sub(pattern: str, repl: str, string: str) -> str:
-    import re
-    return re.sub(pattern, repl, string)
 
 
 def _message_html(author_name: str, author_id: int, content: str,
@@ -88,7 +90,7 @@ def _message_html(author_name: str, author_id: int, content: str,
     bot_badge = '<span class="bot-badge">BOT</span>' if bot else ""
     return f"""
     <div class="message">
-        <img class="avatar" src="{_esc(avatar)}" alt="avatar">
+        <img class="avatar" src="{_esc(avatar)}" alt="avatar" loading="lazy">
         <div class="content-wrap">
             <div class="header-line">
                 <span class="username" style="color: {_esc(name_color)}">{_esc(author_name)}</span>
@@ -108,62 +110,111 @@ def _build_css() -> str:
         font-family: 'gg sans', 'Noto Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
         background: {CSS_COLORS['bg']};
         color: {CSS_COLORS['text_primary']};
-        padding: 16px;
-        line-height: 1.4;
+        padding: 0;
+        line-height: 1.5;
+    }}
+    /* Бренд-бар EGO сверху */
+    .brand-bar {{
+        background: linear-gradient(135deg, {CSS_COLORS['main_dark']} 0%, {CSS_COLORS['main']} 100%);
+        padding: 14px 24px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        box-shadow: 0 4px 12px {CSS_COLORS['shadow_main']};
+    }}
+    .brand-bar .logo {{
+        width: 36px;
+        height: 36px;
+        background: #fff;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        font-weight: 700;
+        color: {CSS_COLORS['main']};
+    }}
+    .brand-bar .brand-text {{
+        color: #fff;
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: 0.3px;
+    }}
+    .brand-bar .brand-sub {{
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 12px;
+        margin-left: auto;
     }}
     .transcript-container {{
-        max-width: 800px;
-        margin: 0 auto;
+        max-width: 880px;
+        margin: 24px auto;
         background: {CSS_COLORS['bg_card']};
-        border-radius: 8px;
+        border-radius: 12px;
         overflow: hidden;
         border: 1px solid {CSS_COLORS['border']};
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
     }}
     .header {{
         background: {CSS_COLORS['bg_hover']};
-        padding: 20px 24px;
+        padding: 24px 28px;
         border-bottom: 1px solid {CSS_COLORS['border']};
     }}
     .header h1 {{
-        font-size: 20px;
+        font-size: 22px;
         color: {CSS_COLORS['text_primary']};
-        margin-bottom: 8px;
+        margin-bottom: 4px;
+        font-weight: 700;
+    }}
+    .header .subtitle {{
+        color: {CSS_COLORS['text_muted']};
+        font-size: 14px;
+        margin-bottom: 16px;
     }}
     .header .meta {{
         color: {CSS_COLORS['text_muted']};
         font-size: 13px;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 8px 16px;
     }}
     .header .meta-item {{
         display: inline-flex;
         align-items: center;
+        padding: 6px 10px;
+        background: {CSS_COLORS['bg_deep']};
+        border-radius: 6px;
+        font-size: 12px;
     }}
     .header .meta-item::before {{
         content: '';
         display: inline-block;
-        width: 8px;
-        height: 8px;
+        width: 6px;
+        height: 6px;
         border-radius: 50%;
         background: {CSS_COLORS['main']};
-        margin-right: 6px;
+        margin-right: 8px;
+        flex-shrink: 0;
+    }}
+    .header .meta-item strong {{
+        color: {CSS_COLORS['text_primary']};
+        margin-left: 6px;
+        font-weight: 600;
     }}
     .messages-list {{
-        padding: 8px 0;
+        padding: 12px 0;
     }}
     .message {{
         display: flex;
-        padding: 6px 24px 6px 16px;
-        gap: 12px;
-        transition: background 0.1s;
+        padding: 8px 28px 8px 20px;
+        gap: 14px;
+        transition: background 0.15s;
     }}
     .message:hover {{
         background: {CSS_COLORS['bg_hover']};
     }}
     .avatar {{
-        width: 40px;
-        height: 40px;
+        width: 42px;
+        height: 42px;
         border-radius: 50%;
         flex-shrink: 0;
         margin-top: 2px;
@@ -176,7 +227,8 @@ def _build_css() -> str:
         display: flex;
         align-items: baseline;
         gap: 8px;
-        margin-bottom: 2px;
+        margin-bottom: 3px;
+        flex-wrap: wrap;
     }}
     .username {{
         font-weight: 600;
@@ -186,14 +238,14 @@ def _build_css() -> str:
         background: {CSS_COLORS['main']};
         color: #fff;
         font-size: 10px;
-        padding: 1px 4px;
+        padding: 1px 5px;
         border-radius: 3px;
         font-weight: 600;
         position: relative;
         top: -2px;
     }}
     .timestamp {{
-        color: {CSS_COLORS['text_muted']};
+        color: {CSS_COLORS['text_dim']};
         font-size: 11px;
     }}
     .content {{
@@ -203,25 +255,36 @@ def _build_css() -> str:
         overflow-wrap: break-word;
     }}
     .content code {{
-        background: {CSS_COLORS['bg_hover']};
-        padding: 1px 4px;
-        border-radius: 3px;
+        background: {CSS_COLORS['bg_deep']};
+        padding: 2px 5px;
+        border-radius: 4px;
         font-family: 'Consolas', 'Monaco', monospace;
         font-size: 13px;
+        color: {CSS_COLORS['warning']};
     }}
     .content strong {{ font-weight: 700; }}
     .content a {{ color: #00a8fc; text-decoration: none; }}
     .content a:hover {{ text-decoration: underline; }}
     .spoiler {{
-        background: #1e1f22;
+        background: {CSS_COLORS['bg_deep']};
         color: transparent;
         border-radius: 3px;
-        padding: 0 2px;
+        padding: 0 3px;
         cursor: pointer;
+        transition: color 0.2s;
     }}
-    .spoiler:hover {{ background: #111214; color: {CSS_COLORS['text_primary']}; }}
+    .spoiler:hover {{
+        background: {CSS_COLORS['bg']};
+        color: {CSS_COLORS['text_primary']};
+    }}
+    .empty {{
+        padding: 48px 24px;
+        text-align: center;
+        color: {CSS_COLORS['text_muted']};
+        font-size: 14px;
+    }}
     .footer {{
-        padding: 12px 24px;
+        padding: 16px 28px;
         background: {CSS_COLORS['bg_hover']};
         border-top: 1px solid {CSS_COLORS['border']};
         color: {CSS_COLORS['text_muted']};
@@ -229,6 +292,23 @@ def _build_css() -> str:
         text-align: center;
     }}
     .footer a {{ color: #00a8fc; text-decoration: none; }}
+    .footer strong {{ color: {CSS_COLORS['text_primary']}; }}
+    .badge {{
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: 600;
+        margin-right: 6px;
+    }}
+    .badge-clan {{
+        background: {CSS_COLORS['success']};
+        color: {CSS_COLORS['bg_deep']};
+    }}
+    .badge-mod {{
+        background: {CSS_COLORS['warning']};
+        color: {CSS_COLORS['bg_deep']};
+    }}
     """
 
 
@@ -250,9 +330,12 @@ def generate_html_transcript(
     """
     closed_at = closed_at or now_msk()
     type_label = "Клан" if ticket_type == "clan" else "Модерация"
+    badge_class = "badge-clan" if ticket_type == "clan" else "badge-mod"
+    badge_html = f'<span class="badge {badge_class}">{_esc(type_label)}</span>'
 
+    messages_list = list(messages)
     messages_html = []
-    for m in messages:
+    for m in messages_list:
         messages_html.append(_message_html(
             author_name=m.get("author_name", "Unknown"),
             author_id=m.get("author_id", 0),
@@ -263,6 +346,11 @@ def generate_html_transcript(
             bot=m.get("bot", False),
         ))
 
+    messages_block = (
+        "".join(messages_html) if messages_html
+        else '<div class="empty">📭 Сообщений не найдено</div>'
+    )
+
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -272,23 +360,31 @@ def generate_html_transcript(
     <style>{_build_css()}</style>
 </head>
 <body>
+    <div class="brand-bar">
+        <div class="logo">E</div>
+        <div class="brand-text">EGODiscord System</div>
+        <div class="brand-sub">Ticket Transcript • {badge_html}</div>
+    </div>
     <div class="transcript-container">
         <div class="header">
             <h1>🎫 Транскрипт тикета — {_esc(channel_name)}</h1>
+            <div class="subtitle">Полная история переписки из закрытого тикета</div>
             <div class="meta">
-                <span class="meta-item">Канал: <strong style="margin-left:4px">#{_esc(channel_name)}</strong></span>
-                <span class="meta-item">ID канала: <strong style="margin-left:4px">{channel_id}</strong></span>
-                <span class="meta-item">Кандидат: <strong style="margin-left:4px">{_esc(user_name)} ({user_id})</strong></span>
-                <span class="meta-item">Тип: <strong style="margin-left:4px">{type_label}</strong></span>
-                <span class="meta-item">Создан: <strong style="margin-left:4px">{_esc(created_at.strftime('%d.%m.%Y %H:%M:%S МСК'))}</strong></span>
-                <span class="meta-item">Закрыт: <strong style="margin-left:4px">{_esc(closed_at.strftime('%d.%m.%Y %H:%M:%S МСК'))}</strong></span>
+                <span class="meta-item">Канал: <strong>#{_esc(channel_name)}</strong></span>
+                <span class="meta-item">ID канала: <strong>{channel_id}</strong></span>
+                <span class="meta-item">Кандидат: <strong>{_esc(user_name)} ({user_id})</strong></span>
+                <span class="meta-item">Тип: <strong>{_esc(type_label)}</strong></span>
+                <span class="meta-item">Создан: <strong>{_esc(created_at.strftime('%d.%m.%Y %H:%M:%S МСК'))}</strong></span>
+                <span class="meta-item">Закрыт: <strong>{_esc(closed_at.strftime('%d.%m.%Y %H:%M:%S МСК'))}</strong></span>
+                <span class="meta-item">Сообщений: <strong>{len(messages_list)}</strong></span>
             </div>
         </div>
         <div class="messages-list">
-            {''.join(messages_html) if messages_html else '<div style="padding:24px;text-align:center;color:#949ba4">Сообщений не найдено</div>'}
+            {messages_block}
         </div>
         <div class="footer">
-            EGODiscord System — транскрипт сгенерирован {_esc(msk_timestamp())}
+            <strong>EGODiscord System</strong> — транскрипт сгенерирован {_esc(msk_timestamp())}<br>
+            Файл предназначен только для администрации клана EGO.
         </div>
     </div>
 </body>

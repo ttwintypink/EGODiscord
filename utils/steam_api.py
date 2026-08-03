@@ -177,31 +177,92 @@ def parse_steamid(raw: str) -> tuple[Optional[int], Optional[str]]:
 
 async def _api_get(session: aiohttp.ClientSession, endpoint: str,
                    params: dict) -> dict:
+    """
+    Запрос к Steam Web API с retry-логикой и backoff.
+
+    Возвращает:
+        - dict с данными ответа (ключ "response" уже развёрнут) при успехе
+        - {"_error": "invalid_api_key"} при 403 (невалидный ключ — не ретраим)
+        - {"_error": "rate_limited"} при 429 (rate limit — ретраим с backoff)
+        - {"_error": "timeout"} если все попытки провалились по таймауту
+        - {"_error": "network"} если сетевая ошибка
+        - {} для прочих неуспешных статусов
+    """
     url = f"{STEAM_API_BASE}/{endpoint}"
-    try:
-        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-            if resp.status == 403:
-                # 403 = невалидный API key или key заблокирован.
-                log.error(
-                    "Steam API %s: 403 Forbidden — невалидный STEAM_API_KEY. "
-                    "Получить новый: https://steamcommunity.com/dev/apikey",
-                    endpoint,
-                )
-                return {"_error": "invalid_api_key"}
-            if resp.status == 429:
-                log.warning("Steam API %s: 429 Too Many Requests (rate limit)", endpoint)
-                return {"_error": "rate_limited"}
-            if resp.status != 200:
-                log.warning("Steam API %s returned %s", endpoint, resp.status)
-                return {}
-            data = await resp.json(content_type=None)
-            return data.get("response", {}) or {}
-    except asyncio.TimeoutError:
-        log.warning("Steam API %s timeout", endpoint)
-        return {}
-    except Exception as e:
-        log.warning("Steam API %s error: %s", endpoint, e)
-        return {}
+    max_attempts = 3
+    base_timeout = 12  # секунд на попытку
+
+    last_error: Optional[str] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with session.get(
+                url,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=base_timeout),
+            ) as resp:
+                if resp.status == 403:
+                    # 403 = невалидный API key или key заблокирован.
+                    # НЕ ретраим — это не временная ошибка.
+                    log.error(
+                        "Steam API %s: 403 Forbidden — невалидный STEAM_API_KEY. "
+                        "Получить новый: https://steamcommunity.com/dev/apikey",
+                        endpoint,
+                    )
+                    return {"_error": "invalid_api_key"}
+                if resp.status == 429:
+                    # Rate limit — ретраим с экспоненциальным backoff.
+                    log.warning(
+                        "Steam API %s: 429 (попытка %d/%d)",
+                        endpoint, attempt, max_attempts,
+                    )
+                    last_error = "rate_limited"
+                    if attempt < max_attempts:
+                        await asyncio.sleep(1.5 * attempt)
+                        continue
+                    return {"_error": "rate_limited"}
+                if resp.status >= 500:
+                    # Серверная ошибка Steam — ретраим.
+                    log.warning(
+                        "Steam API %s: %d server error (попытка %d/%d)",
+                        endpoint, resp.status, attempt, max_attempts,
+                    )
+                    last_error = "server_error"
+                    if attempt < max_attempts:
+                        await asyncio.sleep(1.0 * attempt)
+                        continue
+                    return {"_error": "server_error"}
+                if resp.status != 200:
+                    log.warning("Steam API %s returned %s", endpoint, resp.status)
+                    return {}
+                data = await resp.json(content_type=None)
+                return data.get("response", {}) or {}
+        except asyncio.TimeoutError:
+            log.warning(
+                "Steam API %s timeout (попытка %d/%d)",
+                endpoint, attempt, max_attempts,
+            )
+            last_error = "timeout"
+            if attempt < max_attempts:
+                await asyncio.sleep(1.0 * attempt)
+                continue
+            return {"_error": "timeout"}
+        except aiohttp.ClientError as e:
+            # Сетевые ошибки: connection reset, DNS, и т.п. — ретраим.
+            log.warning(
+                "Steam API %s network error: %s (попытка %d/%d)",
+                endpoint, e, attempt, max_attempts,
+            )
+            last_error = "network"
+            if attempt < max_attempts:
+                await asyncio.sleep(1.0 * attempt)
+                continue
+            return {"_error": "network"}
+        except Exception as e:
+            log.warning("Steam API %s unexpected error: %s", endpoint, e)
+            return {"_error": "unknown"}
+
+    # Если дошли сюда — все попытки провалились
+    return {"_error": last_error or "unknown"}
 
 
 async def resolve_vanity(session: aiohttp.ClientSession, api_key: str,

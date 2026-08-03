@@ -8,7 +8,6 @@ cogs/tickets.py — Создание тикетов: панель, dropdown, м�
     Создание канала   — изоляция прав, пинг ролей, закрепление анкеты
     Steam-проверка    — автоматический запрос к Steam API, цветной Embed
 """
-
 from __future__ import annotations
 
 import logging
@@ -22,11 +21,70 @@ import database
 from utils import embeds
 from utils.embeds import (
     build_main, build_success, build_error, build_warning, build_info,
-    msk_timestamp, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING,
+    msk_timestamp, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, COLOR_MAIN,
 )
 from utils.steam_api import check_steam_account
 
 log = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Премиум-фабрика embed-а панели тикетов
+# ============================================================================
+
+def _build_panel_embed(config: dict) -> discord.Embed:
+    """Собирает embed панели тикетов с премиум-дизайном."""
+    custom_text = config.get("ticket_panel_text", "")
+    if custom_text and len(custom_text) > 20:
+        # Если у юзера задан кастомный текст — используем его как описание.
+        description = custom_text
+    else:
+        description = (
+            "## 🛡️ СИСТЕМА НАБОРА КЛАНА EGO\n\n"
+            "Добро пожаловать в **официальную систему набора** клана **EGO** — "
+            "одного из самых активных и сильных кланов Rust.\n\n"
+            "Выберите интересующую вас категорию в меню ниже, чтобы подать заявку. "
+            "Мы рассматриваем каждую анкету индивидуально.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+
+    embed = discord.Embed(
+        title="🛡️ СИСТЕМА НАБОРА EGO",
+        description=description,
+        color=COLOR_MAIN,
+        timestamp=embeds.now_msk(),
+    )
+    embed.add_field(
+        name="🛡️ Набор в клан",
+        value=(
+            "Хочешь стать частью сильнейшего клана?\n"
+            "Подай заявку и докажи, что достоин носить тег **EGO**."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="👑 Набор в модерацию",
+        value=(
+            "Готов поддерживать порядок и помогать клану расти?\n"
+            "Подай заявку на должность модератора."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📝 Как это работает",
+        value=(
+            "**1.** Выбери категорию в меню ниже\n"
+            "**2.** Заполни анкету (потребуется SteamID или ссылка на профиль)\n"
+            "**3.** Ожидай голосового обзвона от рекрутёра\n"
+            "**4.** Получи ответ от рекрутёра в личные сообщения"
+        ),
+        inline=False,
+    )
+    embed.set_thumbnail(
+        url="https://cdn.discordapp.com/embed/avatars/0.png"
+    )
+    embed.set_footer(text="EGODiscord System • Выбери категорию в меню ниже ⬇️")
+    return embed
 
 
 # ============================================================================
@@ -57,7 +115,8 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
         for i, q in enumerate(questions):
             inp = ui.TextInput(
                 label=q[:45],
-                placeholder=f"Введите ответ..." if i > 0 or "steam" not in q.lower() else "7656119... или https://steamcommunity.com/...",
+                placeholder="Введите ответ..." if i > 0 or "steam" not in q.lower()
+                            else "7656119... или https://steamcommunity.com/...",
                 required=True,
                 style=discord.TextStyle.paragraph if len(q) > 30 else discord.TextStyle.short,
                 max_length=500,
@@ -70,7 +129,11 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
             await interaction.response.send_message(
                 embed=build_success(
                     title="✅ Анкета отправлена",
-                    description="Создаю канал тикета, подождите...",
+                    description=(
+                        "Создаю канал тикета, подождите...\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        "⚡ Это займёт пару секунд."
+                    ),
                 ),
                 ephemeral=True,
             )
@@ -81,7 +144,6 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
         # discord.py TextInput.label помечен как deprecated)
         answers = []
         for inp in self._inputs:
-            # Безопасное получение label: через data dict, через _label, или fallback
             label = getattr(inp, "_label", None) or inp.data.get("label") or "Вопрос"
             answers.append((label, inp.value))
         await self._create_ticket(interaction, answers)
@@ -181,26 +243,48 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
                          else config.get("ping_roles_mod", []))
         ping_str = " ".join(f"<@&{rid}>" for rid in ping_role_ids) if ping_role_ids else ""
 
-        hello_embed = build_main(
-            title=f"{'🛡️' if self.ticket_type == 'clan' else '👑'} Тикет создан",
+        # Премиум-приветствие
+        is_clan = self.ticket_type == "clan"
+        type_emoji = "🛡️" if is_clan else "👑"
+        type_label = "Набор в клан EGO" if is_clan else "Набор в модерацию EGO"
+
+        hello_embed = discord.Embed(
+            title=f"{type_emoji} Тикет создан",
             description=(
-                f"## Привет, {user.mention}! 👋\n\n"
-                f"Тип заявки: **{'🛡️ Набор в клан EGO' if self.ticket_type == 'clan' else '👑 Набор в модерацию EGO'}**\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📋 **Что дальше?**\n"
-                f"• Ознакомься со своей анкетой ниже (она закреплена)\n"
-                f"• Ожидай голосового обзвона от рекрутёра\n"
-                f"• Будь готов ответить на дополнительные вопросы\n\n"
-                f"⏳ Обычно ответ занимает **несколько минут**\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                f"## 👋 Привет, {user.mention}!\n\n"
+                f"Тип заявки: **{type_emoji} {type_label}**\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"### 📋 Что дальше?\n"
+                f"```\n"
+                f"1️⃣  Ознакомься со своей анкетой ниже (она закреплена)\n"
+                f"2️⃣  Ожидай голосового обзвона от рекрутёра\n"
+                f"3️⃣  Будь готов ответить на дополнительные вопросы\n"
+                f"4️⃣  Получи ответ в личные сообщения\n"
+                f"```\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⏳ Обычно ответ занимает **несколько минут**.\n"
+                f"⚠️ Не покидай сервер и следи за уведомлениями."
             ),
-            fields=[
-                ("👤 Кандидат", f"{user.mention}\n`{user.id}`", True),
-                ("📂 Тип заявки", "🛡️ Клан" if self.ticket_type == "clan" else "👑 Модерация", True),
-                ("📅 Создан", msk_timestamp(), True),
-            ],
-            footer_text="EGODiscord System • Не закрывай тикет, ожидай ответа",
+            color=COLOR_MAIN,
+            timestamp=embeds.now_msk(),
         )
+        hello_embed.add_field(
+            name="👤 Кандидат",
+            value=f"{user.mention}\n`{user.id}`",
+            inline=True,
+        )
+        hello_embed.add_field(
+            name="📂 Тип заявки",
+            value=f"{type_emoji} {'Клан' if is_clan else 'Модерация'}",
+            inline=True,
+        )
+        hello_embed.add_field(
+            name="📅 Создан",
+            value=msk_timestamp(),
+            inline=True,
+        )
+        hello_embed.set_thumbnail(url=user.display_avatar.url)
+        hello_embed.set_footer(text="EGODiscord System • Не закрывай тикет, ожидай ответа")
 
         # Кнопки управления
         from cogs.ticket_control import TicketControlView
@@ -222,25 +306,31 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
         except discord.HTTPException as e:
             log.warning("Не удалось отправить/закрепить приветствие: %s", e)
 
-        # 7. Анкета — Embed с ответами, закрепляем
-        form_embed = build_info(
+        # 7. Анкета — Embed с ответами, премиум-стиль
+        form_embed = discord.Embed(
             title="📋 Анкета кандидата",
-            description=f"Кандидат: {user.mention}\nID: `{user.id}`\n\n"
-                        f"Заполнено: {msk_timestamp()}",
-            color=embeds.COLOR_MAIN,
+            description=(
+                f"## 👤 {user.mention}\n"
+                f"**ID:** `{user.id}`\n"
+                f"**Заполнено:** {msk_timestamp()}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=COLOR_MAIN,
+            timestamp=embeds.now_msk(),
         )
-        for q, a in answers:
+        form_embed.set_thumbnail(url=user.display_avatar.url)
+        form_embed.set_footer(text="EGODiscord System • Анкета кандидата")
+
+        for i, (q, a) in enumerate(answers, 1):
             form_embed.add_field(
-                name=q[:256],
-                value=a[:1024] if a else "—",
+                name=f"❓ {i}. {q[:250]}",
+                value=(a[:1024] if a else "—"),
                 inline=False,
             )
 
         try:
             form_msg = await channel.send(embed=form_embed)
             await form_msg.pin()
-            # Сохраняем ID закреплённого сообщения анкеты в БД (через form_text)
-            # На самом деле, мы уже сохранили form_text выше.
         except discord.HTTPException as e:
             log.warning("Не удалось закрепить анкету: %s", e)
 
@@ -271,19 +361,25 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
             log.info("SteamID не найден в анкете, пропускаем проверку.")
             return
 
-        # Предупреждение о проверке
+        # Премиум-предупреждение о проверке (с的阶段ами)
         progress_msg = None
         try:
-            progress_msg = await channel.send(embed=build_info(
+            progress_msg = await channel.send(embed=discord.Embed(
                 title="🛡️ Проверка Steam-аккаунта",
                 description=(
-                    "⏳ **Идёт проверка...**\n\n"
-                    "`▸` Парсинг SteamID...\n"
-                    "`▸` Запрос к Steam API...\n"
-                    "`▸` Проверка VAC-банов...\n"
-                    "`▸` Подсчёт часов в Rust..."
+                    "## ⏳ Идёт проверка...\n\n"
+                    "```\n"
+                    "▸ Парсинг SteamID ........... ✓\n"
+                    "▸ Запрос к Steam API ........ ⏳\n"
+                    "▸ Проверка VAC-банов ........ ожидание\n"
+                    "▸ Подсчёт часов в Rust ...... ожидание\n"
+                    "```\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "⏱️ Обычно занимает 3–8 секунд."
                 ),
-            ))
+                color=COLOR_MAIN,
+                timestamp=embeds.now_msk(),
+            ).set_footer(text="EGODiscord System • Steam Verification"))
         except discord.HTTPException:
             pass
 
@@ -297,20 +393,36 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
             error_msg = result.get("error", "неизвестно")
             # Человеко-читаемые сообщения для частых ошибок
             if "invalid_api_key" in str(error_msg):
-                error_msg = "Невалидный Steam API ключ. Обратитесь к разработчику бота."
+                error_msg = (
+                    "Невалидный Steam API ключ. Обратитесь к разработчику бота "
+                    "или используйте `.editor` → 🔑 Steam API ключ."
+                )
             elif "rate_limited" in str(error_msg):
-                error_msg = "Превышен лимит запросов к Steam API. Попробуйте позже."
+                error_msg = "Превышен лимит запросов к Steam API. Попробуйте через минуту."
+            elif "timeout" in str(error_msg) or "network" in str(error_msg):
+                error_msg = (
+                    "Steam временно недоступен (таймаут/сеть). "
+                    "Проверьте аккаунт вручную по ссылке."
+                )
+            elif "server_error" in str(error_msg):
+                error_msg = (
+                    "Steam сервер вернул ошибку. Попробуйте ещё раз через минуту "
+                    "или проверьте аккаунт вручную."
+                )
 
-            embed = build_warning(
+            embed = discord.Embed(
                 title="🛡️ Проверка Steam — не удалась",
                 description=(
                     f"## ⚠️ Не удалось проверить аккаунт\n\n"
                     f"**Ввод:** `{steam_raw[:200]}`\n"
-                    f"**Причина:** `{error_msg}`\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"💡 **Совет модератору:** проверьте аккаунт вручную."
+                    f"**Причина:** {error_msg}\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"💡 **Совет модератору:** проверьте аккаунт вручную по ссылке выше."
                 ),
+                color=COLOR_WARNING,
+                timestamp=embeds.now_msk(),
             )
+            embed.set_footer(text="EGODiscord System • Steam Verification")
             try:
                 if progress_msg:
                     await progress_msg.edit(embed=embed)
@@ -346,7 +458,6 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
                 hours_text = "🔒 Скрыто (приватный профиль)"
                 hours_emoji = "🔒"
             elif source in ("html", "mixed") and not api_key:
-                # HTML не может получить playtime без логина Steam
                 hours_text = "ℹ️ Требуется Steam API ключ"
                 hours_emoji = "ℹ️"
             else:
@@ -354,14 +465,16 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
                 hours_emoji = "❌"
         else:
             hours = result['hours_rust']
-            if hours >= 500:
+            if hours >= 1000:
                 hours_emoji = "🔥"
-            elif hours >= 100:
+            elif hours >= 500:
                 hours_emoji = "⚔️"
-            elif hours >= 20:
+            elif hours >= 100:
                 hours_emoji = "🎮"
-            else:
+            elif hours >= 20:
                 hours_emoji = "🌱"
+            else:
+                hours_emoji = "🆕"
             hours_text = f"{hours_emoji} **{hours:.1f}** часов"
 
         # ── Онлайн-статус ────────────────────────────────────────────────────
@@ -385,7 +498,6 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
 
         # Флаг страны (через эмодзи)
         if country and country != "—" and len(country) == 2:
-            # Regional indicator symbols: codepoints 0x1F1E6 + (letter - 'A')
             try:
                 flag = chr(0x1F1E6 + ord(country[0]) - ord('A')) + \
                        chr(0x1F1E6 + ord(country[1]) - ord('A'))
@@ -416,62 +528,68 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
         description = (
             f"## {risk_emoji} {persona}\n\n"
             f"Аккаунт кандидата {self.user.mention} проверен.\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
 
         # Если HTML-парсинг — добавим предупреждение
         if source == "html" and not api_key:
             description += (
                 f"\n\n⚠️ **Базовая проверка** — Steam API ключ не настроен.\n"
-                f"Для получения VAC-банов и часов в Rust добавьте ключ в `config.json`.\n"
-                f"Получить бесплатно: https://steamcommunity.com/dev/apikey"
+                f"Для получения VAC-банов и часов в Rust добавьте ключ через "
+                f"`.editor` → 🔑 Steam API ключ."
             )
 
         # ── Поля ───────────────────────────────────────────────────────────────
-        fields = [
-            ("🛡️ Статус аккаунта", status_text, True),
-            ("🎮 Часы в Rust", hours_text, True),
-            ("📡 Статус", online_display, True),
-            ("🌍 Страна", country_display, True),
-            ("📅 Создан", account_created, True),
-            ("👁️ Последний заход", last_seen, True),
-            ("🌐 Источник", source_text, False),
-        ]
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color,
+            timestamp=embeds.now_msk(),
+        )
+        embed.add_field(name="🛡️ Статус аккаунта", value=status_text, inline=True)
+        embed.add_field(name="🎮 Часы в Rust", value=hours_text, inline=True)
+        embed.add_field(name="📡 Статус", value=online_display, inline=True)
+        embed.add_field(name="🌍 Страна", value=country_display, inline=True)
+        embed.add_field(name="📅 Создан", value=account_created, inline=True)
+        embed.add_field(name="👁️ Последний заход", value=last_seen, inline=True)
+        embed.add_field(name="🌐 Источник", value=source_text, inline=False)
 
         if playing_now:
-            fields.append(("🎮 Сейчас играет", f"**{playing_now}**", False))
+            embed.add_field(name="🎮 Сейчас играет", value=f"**{playing_now}**", inline=False)
 
-        fields.extend([
-            ("🆔 SteamID64", f"`{steamid}`", False),
-            ("🔗 Профиль Steam", f"**[Открыть профиль →]({profile_url})**", False),
-        ])
+        embed.add_field(
+            name="🆔 SteamID64",
+            value=f"```\n{steamid}\n```",
+            inline=False,
+        )
+        embed.add_field(
+            name="🔗 Профиль Steam",
+            value=f"**[Открыть профиль →]({profile_url})**",
+            inline=False,
+        )
 
         # Дни с последнего бана
         days_ban = result.get("days_since_last_ban")
         if days_ban and days_ban > 0:
-            fields.append((
-                "⏰ Дней с последнего бана",
-                f"**{days_ban}** дн.",
-                True,
-            ))
+            embed.add_field(
+                name="⏰ Дней с последнего бана",
+                value=f"**{days_ban}** дн.",
+                inline=True,
+            )
 
         avatar = result.get("avatar")
-        embed = build_info(
-            color=color,
-            title=title,
-            description=description,
-            fields=fields,
-            thumbnail=avatar if avatar else None,
-            footer_text="EGODiscord System • Steam Verification",
-        )
+        if avatar:
+            embed.set_thumbnail(url=avatar)
 
-        # Добавляем author-блок с ником и ссылкой на профиль
+        # Author-блок с ником и ссылкой на профиль
         if persona != "—":
             embed.set_author(
                 name=persona,
                 url=profile_url if profile_url != "—" else None,
                 icon_url=avatar if avatar else None,
             )
+
+        embed.set_footer(text="EGODiscord System • Steam Verification")
 
         try:
             if progress_msg:
@@ -576,7 +694,6 @@ class Tickets(commands.Cog):
         """Установить панель тикетов в текущем канале (только для разработчика)."""
         config = getattr(self.bot, "_config", None)
         if config is None:
-            # пробуем загрузить напрямую
             import json
             with open("config.json", "r", encoding="utf-8") as f:
                 config = json.load(f)
@@ -590,42 +707,7 @@ class Tickets(commands.Cog):
                 pass
             return
 
-        embed = build_main(
-            title="🛡️ СИСТЕМА НАБОРА EGO",
-            description=(
-                config.get(
-                    "ticket_panel_text",
-                    "## 🛡️ СИСТЕМА НАБОРА КЛАНА EGO\n\n"
-                    "Добро пожаловать в систему подачи заявок клана **EGO**.\n"
-                    "Выберите интересующую вас категорию в меню ниже, чтобы начать.\n\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-                )
-            ),
-            fields=[
-                (
-                    "🛡️ Набор в клан",
-                    "Хочешь стать частью сильнейшего клана?\n"
-                    "Подай заявку и докажи, что достоин носить тег **EGO**.",
-                    False,
-                ),
-                (
-                    "👑 Набор в модерацию",
-                    "Готов поддерживать порядок и помогать клану расти?\n"
-                    "Подай заявку на должность модератора.",
-                    False,
-                ),
-                (
-                    "📝 Как это работает",
-                    "**1.** Выбери категорию в меню ниже\n"
-                    "**2.** Заполни анкету (потребуется SteamID)\n"
-                    "**3.** Ожидай голосового обзвона\n"
-                    "**4.** Получи ответ от рекрутёра",
-                    False,
-                ),
-            ],
-            footer_text="EGODiscord System • Выбери категорию в меню ниже ⬇️",
-        )
-
+        embed = _build_panel_embed(config)
         view = TicketPanelView(config)
         try:
             await ctx.send(embed=embed, view=view)

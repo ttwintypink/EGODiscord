@@ -86,19 +86,32 @@ class Developer(commands.Cog):
                            delete_after=5)
             return
 
-        # Формируем Embed для ЛС
+        # Формируем Embed для ЛС — премиум-стиль
         dev_member = ctx.author
-        dm_embed = build_warning(
-            title="⚠️ Вам пришло сообщение от разработчика",
+        dm_embed = discord.Embed(
+            title="⚠️ Сообщение от разработчика EGO",
             description=(
-                f"**От:** {dev_member.mention}\n\n"
-                f"{text}"
+                f"## 📩 Вам пришло сообщение\n\n"
+                f"**От:** {dev_member.mention}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{text}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             ),
-            fields=[
-                ("Тикет", ctx.channel.mention, True),
-                ("Время", msk_timestamp(), True),
-            ],
+            color=0xFEE75C,
+            timestamp=embeds.now_msk(),
         )
+        dm_embed.add_field(
+            name="🎫 Тикет",
+            value=ctx.channel.mention,
+            inline=True,
+        )
+        dm_embed.add_field(
+            name="⏱️ Время",
+            value=msk_timestamp(),
+            inline=True,
+        )
+        dm_embed.set_thumbnail(url=dev_member.display_avatar.url)
+        dm_embed.set_footer(text="EGODiscord System • Developer Message")
 
         try:
             dm = await candidate.create_dm()
