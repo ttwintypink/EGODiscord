@@ -65,9 +65,41 @@ cp .env.example .env
 
 ## Запуск
 
+### Локально
+
 ```bash
+python -m venv .venv
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+echo "DISCORD_TOKEN=ваш_токен" > .env
 python bot.py
 ```
+
+### На Railway (рекомендуемый хостинг)
+
+Проект уже подготовлен для Railway — есть `Procfile`, `nixpacks.toml` и `runtime.txt`.
+
+**Пошаговая инструкция:**
+
+1. Зарегистрируйтесь на https://railway.app через GitHub (1 клик).
+2. Нажмите **"New Project"** → **"Deploy from GitHub repo"**.
+3. Если репозиторий не виден — нажмите "Configure GitHub App" и выдайте Railway
+   доступ к репозиторию `ttwintypink/EGODiscord`.
+4. Выберите репозиторий `ttwintypink/EGODiscord` → ветка `main`.
+5. Railway начнёт сборку. Пока она идёт — добавьте переменные окружения:
+   - Откройте проект → вкладка **"Variables"** → **"New Variable"**
+   - Name: `DISCORD_TOKEN`
+   - Value: ваш токен Discord-бота
+6. Railway автоматически запустит бота после сборки.
+7. Вкладка **"Deployments"** → текущий деплой → **"Logs"** — смотреть логи в реальном времени.
+
+**Бесплатный лимит:** $5 кредита в месяц хватит на ~3 недели непрерывной работы бота.
+Когда кредит закончится — бот остановится. Можно привязать карту (платный тариф)
+или создать новый аккаунт.
+
+**Примечание:** На Railway файл `database.db` создаётся в контейнере заново при
+каждом деплое. Если хотите сохранять данные между деплоями — подключите
+Railway Volume (вкладка "Settings" → "Volumes") и поправьте `DB_PATH` в `database.py`.
 
 ## Команды
 

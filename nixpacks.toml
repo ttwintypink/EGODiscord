@@ -1,0 +1,11 @@
+nixpacks.version = "0.36.0"
+
+[phases.setup]
+nixPkgs = ["python312"]
+nixOverlays = []
+
+[phases.install]
+cmds = ["pip install --upgrade pip", "pip install -r requirements.txt"]
+
+[start]
+cmd = "python bot.py"
