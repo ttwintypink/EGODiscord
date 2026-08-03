@@ -410,9 +410,8 @@ class MenuView(ui.View):
         help_view = HelpView(interaction.user, self.config, interaction.user.id, self.bot)
         for opt in help_view.select.options:
             opt.default = (opt.value == "home")
-        await interaction.channel.send(embed=embed, view=help_view)
-        msg = await interaction.channel.fetch_message(interaction.channel.last_message_id)
-        help_view.message = msg
+        sent_msg = await interaction.channel.send(embed=embed, view=help_view)
+        help_view.message = sent_msg
         await interaction.response.send_message(
             embed=build_success(description="Справка открыта ниже."),
             ephemeral=True,

@@ -566,16 +566,21 @@ class ApplicationModal(ui.Modal):
             return
 
         # ── Успешный результат — цвет и статус бана ──────────────────────────
-        if result["vac_banned"] or result["community_banned"]:
+        vac_banned = bool(result.get("vac_banned"))
+        community_banned = bool(result.get("community_banned"))
+        profile_state = result.get("profile_state", "public")
+        hours_rust = result.get("hours_rust")
+
+        if vac_banned or community_banned:
             color = COLOR_ERROR
-            if result["vac_banned"] and result["community_banned"]:
+            if vac_banned and community_banned:
                 status_text = "🔴 VAC + Community бан"
-            elif result["vac_banned"]:
+            elif vac_banned:
                 status_text = "🔴 VAC-бан"
             else:
                 status_text = "🔴 Community-бан"
             risk_emoji = "⚠️"
-        elif result["profile_state"] == "private":
+        elif profile_state == "private":
             color = COLOR_WARNING
             status_text = "🟡 Профиль приватный"
             risk_emoji = "⚠️"
@@ -586,8 +591,8 @@ class ApplicationModal(ui.Modal):
 
         # ── Часы в Rust ──────────────────────────────────────────────────────
         source = result.get("source", "unknown")
-        if result["hours_rust"] is None:
-            if result["profile_state"] == "private":
+        if hours_rust is None:
+            if profile_state == "private":
                 hours_text = "🔒 Скрыто (приватный профиль)"
                 hours_emoji = "🔒"
             elif source in ("html", "mixed") and not api_key:
@@ -597,7 +602,7 @@ class ApplicationModal(ui.Modal):
                 hours_text = "❌ Rust не найдена в библиотеке"
                 hours_emoji = "❌"
         else:
-            hours = result['hours_rust']
+            hours = hours_rust
             if hours >= 1000:
                 hours_emoji = "🔥"
             elif hours >= 500:
@@ -645,9 +650,9 @@ class ApplicationModal(ui.Modal):
             "mixed": "🌐+📡 API + HTML",
         }.get(source, "❓ Неизвестно")
 
-        if result["vac_banned"] or result["community_banned"]:
+        if vac_banned or community_banned:
             title = "🚨 ОБНАРУЖЕН БАН!"
-        elif result["profile_state"] == "private":
+        elif profile_state == "private":
             title = "🛡️ Профиль приватный"
         elif source == "html":
             title = "🛡️ Базовая проверка Steam"
@@ -1034,12 +1039,8 @@ class SetupDropdownView(ui.View):
         help_view = HelpView(interaction.user, self.config, interaction.user.id, self.bot)
         for opt in help_view.select.options:
             opt.default = (opt.value == "home")
-        await interaction.channel.send(embed=embed, view=help_view)
-        try:
-            msg = await interaction.channel.fetch_message(interaction.channel.last_message_id)
-            help_view.message = msg
-        except discord.HTTPException:
-            pass
+        sent_msg = await interaction.channel.send(embed=embed, view=help_view)
+        help_view.message = sent_msg
         await interaction.response.send_message(
             embed=build_success(description="Справка открыта ниже."),
             ephemeral=True,
@@ -1133,7 +1134,10 @@ class Tickets(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    import json
-    with open("config.json", "r", encoding="utf-8") as f:
-        bot._config = json.load(f)
+    # bot._config уже установлен в bot.py после создания бота.
+    # Если по какой-то причине нет — загружаем здесь как fallback.
+    if not getattr(bot, "_config", None):
+        import json
+        with open("config.json", "r", encoding="utf-8") as f:
+            bot._config = json.load(f)
     await bot.add_cog(Tickets(bot))

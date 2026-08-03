@@ -101,6 +101,9 @@ bot = commands.Bot(
     proxy=_proxy_url,
 )
 
+# Делаем конфиг доступным всем когам через bot._config (до загрузки когов)
+bot._config = CONFIG
+
 log.info(
     "HTTP-коннектор: будет создан в main(). Кастомный DNS доступен: %s. Прокси: %s",
     "да (aiodns установлен, будут использованы 1.1.1.1 / 8.8.8.8)" if is_custom_dns_available() else "нет (используется системный DNS)",
@@ -193,7 +196,6 @@ INITIAL_COGS = [
     "cogs.editor",
     "cogs.menu",
     "cogs.help",
-    "cogs.rules",
 ]
 
 

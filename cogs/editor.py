@@ -653,9 +653,13 @@ class QuestionsEditorView(ui.View):
                     )
                     # Обновляем список
                     try:
+                        new_view = QuestionsEditorView(
+                            self.config, self.ticket_type, self.parent_view,
+                        )
+                        new_view.message = self.message
                         await self.message.edit(
                             embed=_build_questions_editor_embed(self.config, self.ticket_type),
-                            view=QuestionsEditorView(self.config, self.ticket_type, self.parent_view),
+                            view=new_view,
                         )
                     except (discord.HTTPException, AttributeError):
                         pass
@@ -684,9 +688,13 @@ class QuestionsEditorView(ui.View):
                         ephemeral=True,
                     )
                     try:
+                        new_view = QuestionsEditorView(
+                            self.config, self.ticket_type, self.parent_view,
+                        )
+                        new_view.message = self.message
                         await self.message.edit(
                             embed=_build_questions_editor_embed(self.config, self.ticket_type),
-                            view=QuestionsEditorView(self.config, self.ticket_type, self.parent_view),
+                            view=new_view,
                         )
                     except (discord.HTTPException, AttributeError):
                         pass
@@ -890,11 +898,18 @@ class EditSingleQuestionModal(ui.Modal):
 
         # Обновляем список
         try:
+            new_view = QuestionsEditorView(
+                self.config, self.ticket_type,
+                self.parent_view.parent_view,
+            )
+            # Переносим message из старого view в новый (чтобы timeout работал)
+            new_view.message = self.parent_view.message
             await self.parent_view.message.edit(
                 embed=_build_questions_editor_embed(self.config, self.ticket_type),
-                view=QuestionsEditorView(self.config, self.ticket_type,
-                                         self.parent_view.parent_view),
+                view=new_view,
             )
+            # Обновляем ссылку в parent_view, чтобы старый view тоже видел новый
+            # (для согласованности, хотя после edit старый view уже не активен)
         except (discord.HTTPException, AttributeError):
             pass
 

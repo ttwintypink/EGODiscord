@@ -511,7 +511,8 @@ async def _handle_mute(interaction: discord.Interaction, config: dict):
         return
 
     guild = interaction.guild
-    vc = guild.get_channel(ticket["voice_channel_id"])
+    vc_id = ticket.get("voice_channel_id")
+    vc = guild.get_channel(vc_id) if vc_id else None
     if vc is None or not isinstance(vc, discord.VoiceChannel):
         await interaction.response.send_message(
             embed=build_error(description="Голосовой канал не найден."),

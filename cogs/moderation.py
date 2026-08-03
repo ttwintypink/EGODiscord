@@ -5,17 +5,15 @@ cogs/moderation.py — Команды администрации:
     .blacklist list               — показать список
     .stats                        — ТОП рекрутеров со средней оценкой
                                     и скоростью реакции
-    .setup-voprosy                — изменить вопросы анкеты (форма)
+
+Для изменения вопросов анкеты используйте .editor → «Вопросы»
 """
 
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
 
 import discord
-from discord import ui
 from discord.ext import commands
 
 import database
@@ -46,72 +44,6 @@ def _is_admin(member: discord.Member, config: dict) -> bool:
         if rid and rid in role_ids:
             return True
     return member.guild_permissions.administrator
-
-
-# ============================================================================
-# Форма изменения вопросов анкеты
-# ============================================================================
-
-class EditQuestionsModal(ui.Modal, title="⚙️ Изменение вопросов анкеты"):
-    def __init__(self, config: dict, ticket_type: str):
-        super().__init__()
-        self.config = config
-        self.ticket_type = ticket_type
-        key = "questions_clan" if ticket_type == "clan" else "questions_mod"
-        current = config.get(key, [])
-        self._inputs = []
-        # 5 полей — каждое соответствует одному вопросу
-        for i in range(5):
-            current_val = current[i] if i < len(current) else ""
-            inp = ui.TextInput(
-                label=f"Вопрос {i + 1}",
-                placeholder="Оставьте пустым, чтобы удалить вопрос",
-                default=current_val,
-                required=False,
-                max_length=200,
-                style=discord.TextStyle.short,
-            )
-            self._inputs.append(inp)
-            self.add_item(inp)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        new_questions = [inp.value.strip() for inp in self._inputs if inp.value and inp.value.strip()]
-        key = "questions_clan" if self.ticket_type == "clan" else "questions_mod"
-        self.config[key] = new_questions
-
-        # Сохраняем в config.json
-        try:
-            with open("config.json", "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            cfg[key] = new_questions
-            with open("config.json", "w", encoding="utf-8") as f:
-                json.dump(cfg, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            log.exception("Не удалось сохранить config.json: %s", e)
-            await interaction.response.send_message(
-                embed=build_error(description=f"Не удалось сохранить конфиг: `{e}`"),
-                ephemeral=True,
-            )
-            return
-
-        type_label = "🛡️ Клан" if self.ticket_type == "clan" else "👑 Модерация"
-        preview = "\n".join(f"**{i+1}.** {q}" for i, q in enumerate(new_questions)) or "—"
-        embed = discord.Embed(
-            title="✅ Вопросы обновлены",
-            description=(
-                f"## 📝 {type_label}\n\n"
-                f"Количество вопросов: **{len(new_questions)}**\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            ),
-            color=0x57F287,
-            timestamp=embeds.now_msk(),
-        )
-        embed.add_field(name="Новые вопросы", value=preview, inline=False)
-        embed.set_footer(text="EGODiscord System • Editor")
-        try:
-            await interaction.response.send_message(embed=embed)
-        except discord.HTTPException:
-            pass
 
 
 # ============================================================================
@@ -341,53 +273,6 @@ class Moderation(commands.Cog):
             await ctx.send(embed=embed)
         except discord.HTTPException:
             pass
-
-    # --- .setup-voprosy ------------------------------------------------------
-    @commands.command(name="setup-voprosy")
-    @commands.guild_only()
-    async def setup_voprosy(self, ctx: commands.Context):
-        """
-        Открывает форму для админов, чтобы изменить вопросы для анкеты.
-        Совет: используйте `.editor` для полноценного дашборда настройки.
-        """
-        if not _is_admin(ctx.author, self._config()):
-            await ctx.send(embed=embeds.error_no_permission())
-            return
-
-        view = ChooseQuestionsTypeView(self._config())
-        embed = discord.Embed(
-            title="⚙️ Изменение вопросов анкеты",
-            description=(
-                "## 📝 Выберите тип заявок\n\n"
-                "Выберите, для какого типа заявок изменить вопросы.\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"💡 **Совет:** используйте `.editor` для полноценного дашборда "
-                f"с всеми настройками бота."
-            ),
-            color=0x5865F2,
-            timestamp=embeds.now_msk(),
-        )
-        embed.set_footer(text="EGODiscord System • Question Editor")
-        try:
-            await ctx.send(embed=embed, view=view)
-        except discord.HTTPException:
-            pass
-
-
-class ChooseQuestionsTypeView(ui.View):
-    def __init__(self, config: dict):
-        super().__init__(timeout=120)
-        self.config = config
-
-    @ui.button(label="Клан 🛡️", style=discord.ButtonStyle.primary, custom_id="ego_setup_q_clan")
-    async def clan_btn(self, interaction: discord.Interaction, button: ui.Button):
-        modal = EditQuestionsModal(self.config, "clan")
-        await interaction.response.send_modal(modal)
-
-    @ui.button(label="Модерация 👑", style=discord.ButtonStyle.primary, custom_id="ego_setup_q_mod")
-    async def mod_btn(self, interaction: discord.Interaction, button: ui.Button):
-        modal = EditQuestionsModal(self.config, "mod")
-        await interaction.response.send_modal(modal)
 
 
 async def setup(bot: commands.Bot):
