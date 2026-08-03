@@ -81,11 +81,31 @@ os.makedirs("logs", exist_ok=True)
 
 # --- Bot instance -----------------------------------------------------------
 intents = discord.Intents.all()
+
+# Создаём кастомный HTTP-коннектор с DNS-резолвером 1.1.1.1 / 8.8.8.8.
+# Это решает проблему: в РФ WARP меняет DNS только для браузера, а Python
+# использует системный DNS, который провайдер блокирует.
+# С кастомным резолвером бот сам обращается к Cloudflare DNS напрямую.
+from utils.http import make_connector, is_custom_dns_available, get_proxy_url
+
+_proxy_url = get_proxy_url()
+_bot_connector = make_connector(force_close=False)
+log.info(
+    "HTTP-коннектор создан. Кастомный DNS: %s. Прокси: %s",
+    "включён (1.1.1.1, 8.8.8.8)" if is_custom_dns_available() else "недоступен (aiodns не установлен)",
+    _proxy_url or "не используется",
+)
+
+# Передаём connector и proxy в Bot — discord.Client сам создаст HTTPClient.
+# Если прокси задан (HTTPS_PROXY env var), он будет использоваться для всех
+# запросов к Discord API.
 bot = commands.Bot(
     command_prefix=".",
     intents=intents,
     help_command=None,
     case_insensitive=True,
+    connector=_bot_connector,
+    proxy=_proxy_url,
 )
 
 
@@ -203,28 +223,33 @@ async def _preflight_discord_check() -> tuple[bool, str]:
     """
     Предзапуск: проверяем доступность Discord API.
     
+    Используем КАСТОМНЫЙ DNS-резолвер (1.1.1.1 / 8.8.8.8) — это критично,
+    потому что системный DNS в РФ может быть заблокирован.
+    
     Возвращает (ok, message). Если ok=False — message содержит человекочитаемую
     инструкцию что делать.
     """
     import aiohttp
+    from utils.http import make_session, is_custom_dns_available
+    
     test_urls = [
         ("Discord API", "https://discord.com/api/v10/gateway"),
         ("Discord CDN", "https://discord.com/api/v10/ping"),
     ]
     results = []
-    for name, url in test_urls:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, timeout=aiohttp.ClientTimeout(total=15)
-                ) as resp:
+    
+    # Используем сессию с кастомным DNS
+    async with make_session(timeout=15) as session:
+        for name, url in test_urls:
+            try:
+                async with session.get(url) as resp:
                     results.append((name, resp.status, None))
-        except asyncio.TimeoutError:
-            results.append((name, None, "timeout"))
-        except aiohttp.ClientConnectorError as e:
-            results.append((name, None, f"connect_error: {e}"))
-        except Exception as e:
-            results.append((name, None, f"{type(e).__name__}: {e}"))
+            except asyncio.TimeoutError:
+                results.append((name, None, "timeout"))
+            except aiohttp.ClientConnectorError as e:
+                results.append((name, None, f"connect_error: {e}"))
+            except Exception as e:
+                results.append((name, None, f"{type(e).__name__}: {e}"))
     
     # Discord API должен ответить 200
     api_ok = results[0][1] == 200
@@ -237,6 +262,9 @@ async def _preflight_discord_check() -> tuple[bool, str]:
         "  ⚠️  НЕ УДАЛОСЬ ПОДКЛЮЧИТЬСЯ К DISCORD",
         "═══════════════════════════════════════════════════════════",
         "",
+        f"  Кастомный DNS (1.1.1.1 / 8.8.8.8): "
+        f"{'✅ включён' if is_custom_dns_available() else '❌ aiodns не установлен'}",
+        "",
         "  Результаты проверки сети:",
     ]
     for name, status, err in results:
@@ -245,31 +273,38 @@ async def _preflight_discord_check() -> tuple[bool, str]:
         else:
             msg_lines.append(f"    {name}: ❌ {err}")
     
+    if not is_custom_dns_available():
+        msg_lines.extend([
+            "",
+            "  ⚠️  aiodns не установлен — это критично для работы в РФ!",
+            "      Установите: pip install aiodns",
+            "      Без aiodns бот использует системный DNS, который может быть заблокирован.",
+        ])
+    
     msg_lines.extend([
         "",
         "  ═══════ ВОЗМОЖНЫЕ ПРИЧИНЫ И РЕШЕНИЯ ═══════",
         "",
-        "  1️⃣  WARP/VPN не маршрутизирует Python-трафик",
-        "     • Браузер может работать через WARP, а Python — нет",
-        "     • Решение для Cloudflare WARP:",
-        "       - Откройте WARP → Settings → Advanced → Connection options",
-        "       - Включите WARP/tunnel (не только 1.1.1.1 DNS)",
-        "       - Перезапустите WARP",
-        "     • Альтернатива: включите системный VPN (Wireguard, OpenVPN,",
-        "       Outline, Amnezia) — он маршрутизирует весь трафик",
+        "  1️⃣  Провайдер блокирует discord.com на уровне IP",
+        "     Даже с кастомным DNS соединение не пройдёт, если IP заблокирован.",
+        "     Решение: используйте VPN с туннелированием (не только DNS):",
+        "     • Cloudflare WARP в режиме WARP (не 1.1.1.1 only)",
+        "       Settings → Advanced → Connection options → WARP",
+        "     • Outline VPN / Amnezia / Wireguard / OpenVPN",
+        "     • Любой SOCKS5/HTTP прокси",
         "",
-        "  2️⃣  Провайдер блокирует discord.com",
-        "     • Проверь: в браузере открой https://discord.com",
-        "       если не открывается — нужен VPN",
-        "     • Если в браузере работает, а в Python нет — см. пункт 1",
+        "  2️⃣  Использовать прокси прямо в боте",
+        "     Задайте переменные окружения перед запуском:",
+        "       set HTTPS_PROXY=http://127.0.0.1:8080",
+        "       set HTTP_PROXY=http://127.0.0.1:8080",
+        "       python bot.py",
+        "     aiohttp автоматически подхватит прокси",
         "",
         "  3️⃣  Антивирус/брандмауэр блокирует Python",
-        "     • Добавь python.exe в исключения антивируса",
-        "     • Проверь Windows Defender Firewall",
+        "     • Добавьте python.exe в исключения Windows Defender",
+        "     • Проверьте Firewall",
         "",
-        "  4️⃣  DNS-проблемы",
-        "     • Попробуй сменить DNS на 1.1.1.1 (Cloudflare) или 8.8.8.8 (Google)",
-        "       в настройках сетевого адаптера",
+        "  4️⃣  Запустите 'python diagnose.py' для детальной диагностики",
         "",
         "  ═══════════════════════════════════════════════════════════",
     ])

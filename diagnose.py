@@ -145,6 +145,7 @@ def check_dependencies():
         ("aiohttp", "aiohttp"),
         ("aiosqlite", "aiosqlite"),
         ("dotenv", "python-dotenv"),
+        ("aiodns", "aiodns  ⚠️ КРИТИЧНО для РФ — без него DNS не обойдёт блокировку"),
     ]
     
     for mod_name, pip_name in deps:
@@ -153,7 +154,7 @@ def check_dependencies():
             version = getattr(mod, "__version__", "неизвестно")
             ok(f"{pip_name} {version}")
         except ImportError:
-            fail(f"{pip_name} не установлен — запустите: pip install {pip_name}")
+            fail(f"{pip_name} не установлен — запустите: pip install {mod_name}")
     
     # Опциональная: bs4
     try:
@@ -247,56 +248,100 @@ async def check_network():
     """Проверка сети."""
     header("5. Доступность Discord")
     
-    # DNS
-    print("\n  DNS-резолвинг:")
+    # 5a. Системный DNS (как делает браузер)
+    print("\n  Системный DNS (как браузер):")
     dns_ok, dns_detail = await check_dns("discord.com")
     if dns_ok:
         ok(f"discord.com {dns_detail}")
     else:
         fail(f"discord.com: {dns_detail}")
-        warn("DNS не работает — попробуй сменить DNS на 1.1.1.1 / 8.8.8.8")
+        warn("Системный DNS не работает — это типично для РФ")
     
-    # TCP
-    print("\n  TCP-соединение:")
-    tcp_ok, tcp_detail = await check_tcp("discord.com", 443)
-    if tcp_ok:
-        ok(f"discord.com:443 — {tcp_detail}")
-    else:
-        fail(f"discord.com:443 — {tcp_detail}")
-        warn("TCP-соединение не установлено — провайдер/файрвол блокирует")
+    # 5b. Кастомный DNS через 1.1.1.1 / 8.8.8.8
+    print("\n  Кастомный DNS (1.1.1.1 / 8.8.8.8 через aiodns):")
+    try:
+        from utils.http import test_custom_dns, is_custom_dns_available
+        if not is_custom_dns_available():
+            fail("aiodns не установлен — бот не сможет обойти DNS-блокировку")
+            warn("Установите: pip install aiodns")
+            custom_dns_ok = False
+        else:
+            custom_dns_ok, custom_detail = await test_custom_dns()
+            if custom_dns_ok:
+                ok(f"Кастомный DNS работает: {custom_detail}")
+            else:
+                fail(f"Кастомный DNS не работает: {custom_detail}")
+                warn("Возможно, провайдер блокирует и 1.1.1.1 — нужен VPN с туннелем")
+    except ImportError:
+        fail("utils.http не найден — проверьте структуру проекта")
+        custom_dns_ok = False
     
-    # HTTP API
-    print("\n  HTTP API:")
+    # 5c. TCP-соединение через кастомный DNS
+    print("\n  TCP-соединение (через кастомный DNS):")
+    try:
+        from utils.http import make_session
+        import aiohttp
+        async with make_session(timeout=10) as session:
+            try:
+                async with session.get(
+                    "https://discord.com/api/v10/gateway"
+                ) as resp:
+                    if resp.status == 200:
+                        ok(f"Discord API: HTTP {resp.status} — доступен")
+                        tcp_ok = True
+                    else:
+                        fail(f"Discord API: HTTP {resp.status}")
+                        tcp_ok = False
+            except Exception as e:
+                fail(f"TCP-соединение: {type(e).__name__}: {e}")
+                tcp_ok = False
+    except ImportError:
+        fail("utils.http не найден")
+        tcp_ok = False
+    
+    # 5d. HTTP API через системный DNS
+    print("\n  HTTP API через системный DNS:")
     api_ok, api_detail = await check_url(
         "Discord API", "https://discord.com/api/v10/gateway"
     )
     if api_ok:
-        ok(f"Discord API: {api_detail}")
+        ok(f"Discord API (system DNS): {api_detail}")
     else:
-        fail(f"Discord API: {api_detail}")
+        fail(f"Discord API (system DNS): {api_detail}")
     
-    # Gateway
-    print("\n  Discord Gateway (WebSocket):")
-    gw_ok, gw_detail = await check_url(
-        "Discord Gateway", "https://gateway.discord.gg/?v=10&encoding=json",
-        expected_status=426,  # WebSocket endpoint возвращает 426 для HTTP-запроса
-    )
-    if gw_ok:
-        ok(f"Discord Gateway: {gw_detail}")
-    else:
-        # 426 — это нормально для HTTP-запроса к WebSocket
-        if "426" in gw_detail:
-            ok(f"Discord Gateway: доступен (HTTP 426 — ожидаемо для WS)")
-            gw_ok = True
+    # Итог
+    return tcp_ok or (custom_dns_ok and api_ok)
+
+
+async def check_proxy():
+    """Проверка прокси."""
+    header("6. Прокси (если задан)")
+    
+    try:
+        from utils.http import test_proxy, get_proxy_url
+        proxy_url = get_proxy_url()
+        if not proxy_url:
+            info("Прокси не задан (нет env переменных HTTP_PROXY/HTTPS_PROXY/ALL_PROXY)")
+            info("Если Discord недоступен — попробуйте задать прокси:")
+            info("  set HTTPS_PROXY=http://127.0.0.1:8080")
+            info("  set HTTP_PROXY=http://127.0.0.1:8080")
+            info("  python bot.py")
+            return True
+        ok(f"Прокси задан: {proxy_url}")
+        proxy_ok, proxy_detail = await test_proxy()
+        if proxy_ok:
+            ok(f"Прокси работает: {proxy_detail}")
         else:
-            fail(f"Discord Gateway: {gw_detail}")
-    
-    return api_ok and gw_ok and tcp_ok
+            fail(f"Прокси не работает: {proxy_detail}")
+        return proxy_ok
+    except ImportError:
+        fail("utils.http не найден")
+        return False
 
 
 async def check_steam():
     """Проверка Steam API."""
-    header("6. Доступность Steam")
+    header("7. Доступность Steam")
     
     steam_ok, steam_detail = await check_url(
         "Steam API", "https://api.steampowered.com/ISteamWebAPIUtil/GetServerInfo/v1/"
@@ -319,7 +364,7 @@ async def check_steam():
 
 async def check_steam_api_key(api_key: str):
     """Проверка валидности Steam API ключа."""
-    header("7. Тест Steam API ключа")
+    header("8. Тест Steam API ключа")
     
     if not api_key or len(api_key) < 16:
         fail("Ключ пустой или слишком короткий")
@@ -374,10 +419,13 @@ async def main():
     # 5. Discord сеть
     discord_ok = await check_network()
     
-    # 6. Steam сеть
+    # 6. Прокси (если задан)
+    proxy_ok = await check_proxy()
+    
+    # 7. Steam сеть
     steam_net_ok = await check_steam()
     
-    # 7. Steam API ключ
+    # 8. Steam API ключ
     if cfg:
         api_key = cfg.get("steam_api_key", "")
         # env перекрывает

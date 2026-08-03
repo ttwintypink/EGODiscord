@@ -643,7 +643,15 @@ async def check_steam_account(api_key: str, raw_input: str) -> dict:
                            "ссылка на профиль или vanity-имя.")
         return result
 
-    async with aiohttp.ClientSession() as session:
+    # Используем кастомный HTTP-стек с DNS-резолвером 1.1.1.1 / 8.8.8.8.
+    # Это критично для работы в РФ, где системный DNS может быть заблокирован.
+    try:
+        from utils.http import make_session
+        session_ctx = make_session(timeout=30)
+    except ImportError:
+        session_ctx = aiohttp.ClientSession()
+    
+    async with session_ctx as session:
         # ── Шаг 1: получаем steamid64 ────────────────────────────────────────
         api_key_valid = bool(api_key and api_key != "ВСТАВЬ_ТОКЕН_БОТА")
 
