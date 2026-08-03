@@ -1,17 +1,26 @@
 """
-cogs/tickets.py — Создание тикетов: панель, dropdown, модал, Steam-проверка.
+cogs/tickets.py — Создание тикетов: панель, dropdown, модал, Steam-проверка,
+автоматическая смена ника кандидата.
 
 Логика:
-    .setup            — установка панели (только для developer_id)
-    Dropdown          — выбор «клан» / «модерация»
-    Modal             — анкета с вопросами из config.json
-    Создание канала   — изоляция прав, пинг ролей, закрепление анкеты
-    Steam-проверка    — автоматический запрос к Steam API, цветной Embed
+    .setup            — установка панели (только для developer_id) — ИНТЕРАКТИВНОЕ МЕНЮ
+    Dropdown панели   — выбор «клан» / «модерация»
+    Цепочка модалок   — поддержка до 15 вопросов (по 5 полей в каждой модалке)
+    Каждый вопрос имеет:
+        - title       — название вопроса
+        - subtitle    — подвопросник (placeholder)
+        - max_length  — максимальная длина ответа
+        - min_length  — минимальная длина ответа
+        - multiline   — многострочное поле
+        - required    — обязательный ли
+    Создание канала   — изоляция прав, пинг ролей, ОДНО компактное сообщение управления
+    Steam-проверка    — автоматический запрос к Steam API
+    Автоник           — "Steam Name | Real Name" при создании тикета
 """
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Any
 
 import discord
 from discord import ui, AllowedMentions
@@ -29,6 +38,79 @@ log = logging.getLogger(__name__)
 
 
 # ============================================================================
+# Нормализация вопросов (старый формат строк → новый формат объектов)
+# ============================================================================
+
+def _normalize_question(q: Any) -> dict:
+    """Приводит вопрос к единому формату dict.
+
+    Принимает:
+        - строку (старый формат) → конвертирует
+        - dict (новый формат) → дополняет недостающие поля
+    """
+    if isinstance(q, str):
+        return {
+            "title": q[:45],
+            "subtitle": "",
+            "max_length": 500,
+            "min_length": 1,
+            "multiline": len(q) > 30,
+            "required": True,
+            "is_real_name": False,
+            "is_steam": "steam" in q.lower(),
+        }
+    if isinstance(q, dict):
+        return {
+            "title": str(q.get("title", "Вопрос"))[:45],
+            "subtitle": str(q.get("subtitle", ""))[:100],
+            "max_length": min(int(q.get("max_length", 500)), 4000),
+            "min_length": max(int(q.get("min_length", 0)), 0),
+            "multiline": bool(q.get("multiline", False)),
+            "required": bool(q.get("required", True)),
+            "is_real_name": bool(q.get("is_real_name", False)),
+            "is_steam": bool(q.get("is_steam", False)),
+        }
+    return {
+        "title": "Вопрос",
+        "subtitle": "",
+        "max_length": 500,
+        "min_length": 1,
+        "multiline": False,
+        "required": True,
+        "is_real_name": False,
+        "is_steam": False,
+    }
+
+
+def _normalize_questions(questions: list) -> list[dict]:
+    """Нормализует список вопросов."""
+    if not isinstance(questions, list):
+        return []
+    return [_normalize_question(q) for q in questions if q]
+
+
+def _capitalize_first(text: Optional[str]) -> str:
+    """Делает первую букву строки заглавной.
+
+    Корректно работает с кириллицей и латиницей:
+        'имя'   → 'Имя'
+        'ummi'  → 'Ummi'
+        'александр' → 'Александр'
+        'john doe'  → 'John doe'  (только первая буква строки)
+
+    Остальные буквы не изменяются — кандидат мог написать 'macDonald'
+    и это останется 'MacDonald', а не 'Macdonald'.
+    """
+    if not text:
+        return ""
+    text = str(text).strip()
+    if not text:
+        return ""
+    # str.upper() корректно работает с Unicode (включая кириллицу)
+    return text[0].upper() + text[1:]
+
+
+# ============================================================================
 # Премиум-фабрика embed-а панели тикетов
 # ============================================================================
 
@@ -36,7 +118,6 @@ def _build_panel_embed(config: dict) -> discord.Embed:
     """Собирает embed панели тикетов с премиум-дизайном."""
     custom_text = config.get("ticket_panel_text", "")
     if custom_text and len(custom_text) > 20:
-        # Если у юзера задан кастомный текст — используем его как описание.
         description = custom_text
     else:
         description = (
@@ -88,70 +169,114 @@ def _build_panel_embed(config: dict) -> discord.Embed:
 
 
 # ============================================================================
-# Модальное окно анкеты
+# Цепочка модалок (поддержка >5 вопросов)
 # ============================================================================
 
-class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
+class ApplicationModal(ui.Modal):
     """
-    Динамически создаётся из списка вопросов (макс. 5 вопросов).
+    Модалка анкеты. Поддерживает цепочку: если вопросов >5, после отправки
+    первой модалки открывается следующая с оставшимися вопросами.
+
+    Ответы накапливаются в self._all_answers.
     """
 
-    # Заполняем __init__ динамически
-    def __init__(self, ticket_type: str, config: dict, user: discord.Member):
-        self.ticket_type = ticket_type  # 'clan' | 'mod'
+    def __init__(self, ticket_type: str, config: dict, user: discord.Member,
+                 all_answers: list[tuple[dict, str]] = None,
+                 chunk_index: int = 0):
+        self.ticket_type = ticket_type
         self.config = config
         self.user = user
+        self._all_answers = all_answers or []
+        self._chunk_index = chunk_index
 
         questions_key = "questions_clan" if ticket_type == "clan" else "questions_mod"
-        questions = config.get(questions_key, [])[:5]
-        if not questions:
-            questions = ["Ваш SteamID или ссылка на профиль Steam?"]
+        raw_questions = config.get(questions_key, [])
+        all_questions = _normalize_questions(raw_questions)[:15]  # максимум 15 вопросов
+        if not all_questions:
+            all_questions = [_normalize_question("Ваш SteamID или ссылка на профиль Steam?")]
 
-        # Динамически создаём поля (макс 5 в discord.py Modal)
-        self._inputs = []
-        title = "📝 Заявка в клан EGO" if ticket_type == "clan" else "📝 Заявка в модерацию EGO"
+        # Делим на чанки по 5
+        self._all_questions = all_questions
+        chunk_size = 5
+        chunks = [all_questions[i:i + chunk_size]
+                  for i in range(0, len(all_questions), chunk_size)]
+        self._chunks = chunks
+        self._current_chunk = chunks[chunk_index] if chunk_index < len(chunks) else []
+
+        total = len(all_questions)
+        start_num = chunk_index * chunk_size + 1
+        end_num = start_num + len(self._current_chunk) - 1
+
+        is_clan = ticket_type == "clan"
+        if len(chunks) > 1:
+            title = f"{'🛡️ Клан' if is_clan else '👑 Модер'} {chunk_index + 1}/{len(chunks)} ({start_num}-{end_num} из {total})"
+        else:
+            title = f"{'🛡️ Заявка в клан' if is_clan else '👑 Заявка в модерацию'}"
         super().__init__(title=title[:45])
 
-        for i, q in enumerate(questions):
+        self._inputs: list[tuple[dict, ui.TextInput]] = []
+        for i, q in enumerate(self._current_chunk):
+            num = start_num + i
+            label = f"{num}. {q['title']}"[:45]
+            placeholder = q.get("subtitle", "")[:100] or None
             inp = ui.TextInput(
-                label=q[:45],
-                placeholder="Введите ответ..." if i > 0 or "steam" not in q.lower()
-                            else "7656119... или https://steamcommunity.com/...",
-                required=True,
-                style=discord.TextStyle.paragraph if len(q) > 30 else discord.TextStyle.short,
-                max_length=500,
+                label=label,
+                placeholder=placeholder,
+                required=q.get("required", True),
+                style=discord.TextStyle.paragraph if q.get("multiline") else discord.TextStyle.short,
+                max_length=q.get("max_length", 500),
+                min_length=q.get("min_length", 0) if q.get("required", True) else 0,
             )
-            self._inputs.append(inp)
+            self._inputs.append((q, inp))
             self.add_item(inp)
 
     async def on_submit(self, interaction: discord.Interaction):
+        # Собираем ответы из текущего чанка
+        for q, inp in self._inputs:
+            value = inp.value.strip() if inp.value else ""
+            self._all_answers.append((q, value))
+
+        # Если есть ещё чанки — открываем следующую модалку
+        # В discord.py 2.x: после отправки модалки interaction.response уже использован,
+        # но on_submit получает НОВЫЙ interaction, для которого можно вызвать send_modal
+        next_idx = self._chunk_index + 1
+        if next_idx < len(self._chunks):
+            next_modal = ApplicationModal(
+                self.ticket_type, self.config, self.user,
+                self._all_answers, next_idx,
+            )
+            try:
+                await interaction.response.send_modal(next_modal)
+            except discord.HTTPException as e:
+                log.warning("Не удалось открыть следующую модалку: %s", e)
+                # Fallback: уведомить пользователя
+                try:
+                    await interaction.response.send_message(
+                        embed=build_error(
+                            description=f"Не удалось открыть следующую часть анкеты: `{e}`. "
+                                        f"Попробуйте ещё раз.",
+                        ),
+                        ephemeral=True,
+                    )
+                except discord.HTTPException:
+                    pass
+                return
+            return
+
+        # Это последний чанк — собираем все ответы
         try:
             await interaction.response.send_message(
                 embed=build_success(
                     title="✅ Анкета отправлена",
-                    description=(
-                        "Создаю канал тикета, подождите...\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        "⚡ Это займёт пару секунд."
-                    ),
+                    description="Создаю канал тикета, подождите пару секунд...",
                 ),
                 ephemeral=True,
             )
         except discord.HTTPException:
             pass
 
-        # Собираем ответы. В discord.py 2.7+ у TextInput есть .label напрямую,
-        # старый .data пропал. Используем безопасный обход.
-        answers = []
-        for inp in self._inputs:
-            # Приоритет: приватный _label (самый надёжный) → публичный label → fallback
-            label = (
-                getattr(inp, "_label", None)
-                or getattr(inp, "label", None)
-                or "Вопрос"
-            )
-            answers.append((label, inp.value))
-        await self._create_ticket(interaction, answers)
+        # Создаём тикет
+        await self._create_ticket(interaction, self._all_answers)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         log.exception("Ошибка в ApplicationModal: %s", error)
@@ -164,11 +289,11 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
             pass
 
     # ------------------------------------------------------------------------
-    # Создание канала тикета
+    # Создание канала тикета — КОМПАКТНО
     # ------------------------------------------------------------------------
 
     async def _create_ticket(self, interaction: discord.Interaction,
-                             answers: list[tuple[str, str]]):
+                             answers: list[tuple[dict, str]]):
         guild = interaction.guild
         user = self.user
         config = self.config
@@ -197,6 +322,7 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
                 view_channel=True, send_messages=True,
                 manage_channels=True, read_message_history=True,
                 manage_permissions=True, attach_files=True, embed_links=True,
+                manage_nicknames=True,
             ),
             user: discord.PermissionOverwrite(
                 view_channel=True, send_messages=True,
@@ -239,79 +365,65 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
             )
             return
 
-        # 5. Сохраняем в БД
-        form_text = "\n".join(f"**{q}**\n{a}" for q, a in answers)
-        await database.ticket_create(channel.id, user.id, self.ticket_type, form_text)
+        # 5. Сохраняем в БД (с исходным ником)
+        form_text_parts = []
+        for q, a in answers:
+            form_text_parts.append(f"**{q['title']}**\n{a}")
+        form_text = "\n".join(form_text_parts)
 
-        # 6. Приветственное сообщение + пинг ролей
+        original_nick = user.display_name  # исходный ник (до изменения)
+        await database.ticket_create(
+            channel.id, user.id, self.ticket_type, form_text,
+            original_nickname=original_nick,
+        )
+
+        # 6. Сохраняем ID сообщения управления в БД (через topic или отдельный механизм)
+        # ИЩЕМ настоящее имя для ника
+        real_name = None
+        steam_raw = None
+        for q, a in answers:
+            if q.get("is_real_name"):
+                real_name = a
+            if q.get("is_steam"):
+                steam_raw = a
+            elif not steam_raw and "steam" in q.get("title", "").lower():
+                steam_raw = a
+
+        # 7. Пинг ролей
         ping_role_ids = (config.get("ping_roles_clan", []) if self.ticket_type == "clan"
                          else config.get("ping_roles_mod", []))
         ping_str = " ".join(f"<@&{rid}>" for rid in ping_role_ids) if ping_role_ids else ""
-
-        # Премиум-приветствие
-        is_clan = self.ticket_type == "clan"
-        type_emoji = "🛡️" if is_clan else "👑"
-        type_label = "Набор в клан EGO" if is_clan else "Набор в модерацию EGO"
-
-        hello_embed = discord.Embed(
-            title=f"{type_emoji} Тикет создан",
-            description=(
-                f"## 👋 Привет, {user.mention}!\n\n"
-                f"Тип заявки: **{type_emoji} {type_label}**\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"### 📋 Что дальше?\n"
-                f"```\n"
-                f"1️⃣  Ознакомься со своей анкетой ниже (она закреплена)\n"
-                f"2️⃣  Ожидай голосового обзвона от рекрутёра\n"
-                f"3️⃣  Будь готов ответить на дополнительные вопросы\n"
-                f"4️⃣  Получи ответ в личные сообщения\n"
-                f"```\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"⏳ Обычно ответ занимает **несколько минут**.\n"
-                f"⚠️ Не покидай сервер и следи за уведомлениями."
-            ),
-            color=COLOR_MAIN,
-            timestamp=embeds.now_msk(),
-        )
-        hello_embed.add_field(
-            name="👤 Кандидат",
-            value=f"{user.mention}\n`{user.id}`",
-            inline=True,
-        )
-        hello_embed.add_field(
-            name="📂 Тип заявки",
-            value=f"{type_emoji} {'Клан' if is_clan else 'Модерация'}",
-            inline=True,
-        )
-        hello_embed.add_field(
-            name="📅 Создан",
-            value=msk_timestamp(),
-            inline=True,
-        )
-        hello_embed.set_thumbnail(url=user.display_avatar.url)
-        hello_embed.set_footer(text="EGODiscord System • Не закрывай тикет, ожидай ответа")
-
-        # Кнопки управления
-        from cogs.ticket_control import TicketControlView
-        control_view = TicketControlView(config)
-
         content_parts = [f"{user.mention}", ping_str] if ping_str else [f"{user.mention}"]
         content = " ".join(p for p in content_parts if p)
 
+        # 8. Создаём ОДНО компактное сообщение управления
+        # Это сообщение будет редактироваться при claim/call/close — без спама embed'ами
+        from cogs.ticket_control import build_control_embed, TicketControlView
+        control_embed = build_control_embed(
+            user=user,
+            ticket_type=self.ticket_type,
+            status="open",
+            claimer=None,
+            voice_channel=None,
+            steam_status="pending",
+        )
+        control_view = TicketControlView(config)
+
         try:
-            hello_msg = await channel.send(
+            control_msg = await channel.send(
                 content=content,
-                embed=hello_embed,
+                embed=control_embed,
                 view=control_view,
                 allowed_mentions=AllowedMentions(
                     users=True, roles=True, everyone=False
                 ),
             )
-            await hello_msg.pin()
+            await control_msg.pin()
         except discord.HTTPException as e:
-            log.warning("Не удалось отправить/закрепить приветствие: %s", e)
+            log.warning("Не удалось отправить/закрепить управление: %s", e)
+            control_msg = None
 
-        # 7. Анкета — Embed с ответами, премиум-стиль
+        # 9. Анкета — отдельный embed (закреплённый)
         form_embed = discord.Embed(
             title="📋 Анкета кандидата",
             description=(
@@ -328,7 +440,7 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
 
         for i, (q, a) in enumerate(answers, 1):
             form_embed.add_field(
-                name=f"❓ {i}. {q[:250]}",
+                name=f"❓ {i}. {q['title'][:250]}",
                 value=(a[:1024] if a else "—"),
                 inline=False,
             )
@@ -338,35 +450,41 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
             await form_msg.pin()
         except discord.HTTPException as e:
             log.warning("Не удалось закрепить анкету: %s", e)
+            form_msg = None
 
-        # 8. Записываем сообщения в БД для транскрипта
+        # 10. Записываем сообщения в БД для транскрипта
         await database.message_add(channel.id, user.id, str(user), form_text)
 
-        # 9. Steam-проверка
-        await self._check_steam(interaction, channel, answers)
+        # 11. Steam-проверка + автоник (компактно — отдельное сообщение,
+        # которое редактируется: прогресс → результат)
+        await self._check_steam_and_set_nick(
+            interaction, channel, control_msg, answers, real_name, steam_raw
+        )
 
     # ------------------------------------------------------------------------
-    # Steam-проверка
+    # Steam-проверка + автоник — ОДНО сообщение (редактируется)
     # ------------------------------------------------------------------------
 
-    async def _check_steam(self, interaction: discord.Interaction,
-                           channel: discord.TextChannel,
-                           answers: list[tuple[str, str]]):
+    async def _check_steam_and_set_nick(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        control_msg: Optional[discord.Message],
+        answers: list[tuple[dict, str]],
+        real_name: Optional[str],
+        steam_raw: Optional[str],
+    ):
         config = self.config
         api_key = config.get("steam_api_key", "")
 
-        # Находим ответ, где есть SteamID (по ключевому слову)
-        steam_raw = None
-        for q, a in answers:
-            if any(kw in q.lower() for kw in ("steamid", "steam id", "профиль steam", "steam")):
-                steam_raw = a
-                break
-
+        # Если нет SteamID — пропускаем
         if not steam_raw:
-            log.info("SteamID не найден в анкете, пропускаем проверку.")
+            # Меняем ник на "Real Name" (если есть) — без Steam
+            if real_name and self.user:
+                await self._set_nickname(self.user, real_name, None)
             return
 
-        # Премиум-предупреждение о проверке (с的阶段ами)
+        # Создаём сообщение с прогрессом
         progress_msg = None
         try:
             progress_msg = await channel.send(embed=discord.Embed(
@@ -374,8 +492,8 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
                 description=(
                     "## ⏳ Идёт проверка...\n\n"
                     "```\n"
-                    "▸ Парсинг SteamID ........... ✓\n"
-                    "▸ Запрос к Steam API ........ ⏳\n"
+                    "▸ Парсинг SteamID ........... ⏳\n"
+                    "▸ Запрос к Steam API ........ ожидание\n"
                     "▸ Проверка VAC-банов ........ ожидание\n"
                     "▸ Подсчёт часов в Rust ...... ожидание\n"
                     "```\n"
@@ -388,6 +506,7 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
         except discord.HTTPException:
             pass
 
+        # Запрос к Steam API
         try:
             result = await check_steam_account(api_key, steam_raw)
         except Exception as e:
@@ -396,7 +515,6 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
 
         if not result.get("success"):
             error_msg = result.get("error", "неизвестно")
-            # Человеко-читаемые сообщения для частых ошибок
             if "invalid_api_key" in str(error_msg):
                 error_msg = (
                     "Невалидный Steam API ключ. Обратитесь к разработчику бота "
@@ -422,7 +540,7 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
                     f"**Ввод:** `{steam_raw[:200]}`\n"
                     f"**Причина:** {error_msg}\n\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"💡 **Совет модератору:** проверьте аккаунт вручную по ссылке выше."
+                    f"💡 **Совет модератору:** проверьте аккаунт вручную."
                 ),
                 color=COLOR_WARNING,
                 timestamp=embeds.now_msk(),
@@ -437,7 +555,7 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
                 pass
             return
 
-        # ── Цвет и статус бана ────────────────────────────────────────────────
+        # ── Успешный результат — цвет и статус бана ──────────────────────────
         if result["vac_banned"] or result["community_banned"]:
             color = COLOR_ERROR
             if result["vac_banned"] and result["community_banned"]:
@@ -456,7 +574,7 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
             status_text = "🟢 Аккаунт чистый"
             risk_emoji = "✅"
 
-        # ── Часы в Rust с цветовой индикацией ────────────────────────────────
+        # ── Часы в Rust ──────────────────────────────────────────────────────
         source = result.get("source", "unknown")
         if result["hours_rust"] is None:
             if result["profile_state"] == "private":
@@ -501,7 +619,6 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
         country = result.get("country_code") or "—"
         playing_now = result.get("currently_playing")
 
-        # Флаг страны (через эмодзи)
         if country and country != "—" and len(country) == 2:
             try:
                 flag = chr(0x1F1E6 + ord(country[0]) - ord('A')) + \
@@ -512,14 +629,12 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
         else:
             country_display = country
 
-        # Источник данных
         source_text = {
             "api": "🌐 Steam Web API",
             "html": "📡 HTML-парсинг",
             "mixed": "🌐+📡 API + HTML",
         }.get(source, "❓ Неизвестно")
 
-        # ── Заголовок ─────────────────────────────────────────────────────────
         if result["vac_banned"] or result["community_banned"]:
             title = "🚨 ОБНАРУЖЕН БАН!"
         elif result["profile_state"] == "private":
@@ -529,22 +644,19 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
         else:
             title = "🛡️ Проверка Steam завершена"
 
-        # ── Описание ──────────────────────────────────────────────────────────
         description = (
             f"## {risk_emoji} {persona}\n\n"
             f"Аккаунт кандидата {self.user.mention} проверен.\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
 
-        # Если HTML-парсинг — добавим предупреждение
         if source == "html" and not api_key:
             description += (
                 f"\n\n⚠️ **Базовая проверка** — Steam API ключ не настроен.\n"
-                f"Для получения VAC-банов и часов в Rust добавьте ключ через "
+                f"Для VAC-банов и часов в Rust добавьте ключ через "
                 f"`.editor` → 🔑 Steam API ключ."
             )
 
-        # ── Поля ───────────────────────────────────────────────────────────────
         embed = discord.Embed(
             title=title,
             description=description,
@@ -573,7 +685,6 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
             inline=False,
         )
 
-        # Дни с последнего бана
         days_ban = result.get("days_since_last_ban")
         if days_ban and days_ban > 0:
             embed.add_field(
@@ -586,7 +697,6 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
         if avatar:
             embed.set_thumbnail(url=avatar)
 
-        # Author-блок с ником и ссылкой на профиль
         if persona != "—":
             embed.set_author(
                 name=persona,
@@ -607,6 +717,40 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
                 await channel.send(embed=embed)
             except discord.HTTPException:
                 pass
+
+        # ── АВТОНИК: меняем ник кандидата на "Steam Name | Real Name" ─────────
+        await self._set_nickname(self.user, real_name, persona if persona != "—" else None)
+
+    async def _set_nickname(self, member: discord.Member,
+                            real_name: Optional[str],
+                            steam_name: Optional[str]):
+        """Меняет ник кандидата на формат 'Steam Name | Real Name'.
+
+        Обе части автоматически пишутся с большой буквы — даже если кандидат
+        ввёл всё маленькими. Работает для кириллицы ('имя' → 'Имя') и латиницы
+        ('ummi' → 'Ummi').
+        """
+        if not member or not (real_name or steam_name):
+            return
+
+        # Формируем новый ник — каждая часть с большой буквы
+        parts = []
+        if steam_name:
+            parts.append(_capitalize_first(steam_name)[:30])
+        if real_name:
+            parts.append(_capitalize_first(real_name)[:20])
+        if not parts:
+            return
+
+        new_nick = " | ".join(parts)[:32]  # лимит Discord 32 символа
+
+        try:
+            await member.edit(nick=new_nick, reason="Автоник: заявка создана")
+            log.info("Ник изменён: %s → %s", member, new_nick)
+        except discord.Forbidden:
+            log.warning("Нет прав на смену ника для %s", member)
+        except discord.HTTPException as e:
+            log.warning("Не удалось изменить ник: %s", e)
 
 
 # ============================================================================
@@ -667,8 +811,8 @@ class TicketPanelView(ui.View):
             )
             return
 
-        # 3. Открываем модал
-        modal = ApplicationModal(ticket_type, self.config, user)
+        # 3. Открываем первую модалку
+        modal = ApplicationModal(ticket_type, self.config, user, [], 0)
         try:
             await interaction.response.send_modal(modal)
         except discord.HTTPException as e:
@@ -683,6 +827,244 @@ class TicketPanelView(ui.View):
 
 
 # ============================================================================
+# ИНТЕРАКТИВНОЕ МЕНЮ .setup (вместо кучи кнопок)
+# ============================================================================
+
+class SetupDropdownView(ui.View):
+    """Меню .setup с dropdown вместо кучи кнопок."""
+
+    def __init__(self, config: dict, owner_id: int, bot: commands.Bot):
+        super().__init__(timeout=300)
+        self.config = config
+        self.owner_id = owner_id
+        self.bot = bot
+        self.message: Optional[discord.Message] = None
+
+        # Создаём dropdown с действиями
+        select = ui.Select(
+            placeholder="⚡ Выберите действие настройки...",
+            min_values=1, max_values=1,
+            options=[
+                discord.SelectOption(
+                    label="Создать панель тикетов",
+                    description="Установить новую панель в этом канале",
+                    emoji="🎫",
+                    value="create_panel",
+                ),
+                discord.SelectOption(
+                    label="Пересоздать панель",
+                    description="Удалить старую панель и создать новую",
+                    emoji="♻️",
+                    value="recreate_panel",
+                ),
+                discord.SelectOption(
+                    label="Открыть редактор настроек",
+                    description="Настройка вопросов, ролей, ключей, цвета",
+                    emoji="🛠️",
+                    value="editor",
+                ),
+                discord.SelectOption(
+                    label="Превью панели",
+                    description="Посмотреть как выглядит панель сейчас",
+                    emoji="👁",
+                    value="preview",
+                ),
+                discord.SelectOption(
+                    label="Открыть справку",
+                    description="Показать список всех команд",
+                    emoji="📖",
+                    value="help",
+                ),
+                discord.SelectOption(
+                    label="Информация о боте",
+                    description="Версия, аптайм, сервера",
+                    emoji="ℹ️",
+                    value="sysinfo",
+                ),
+                discord.SelectOption(
+                    label="Закрыть меню",
+                    description="Удалить это сообщение",
+                    emoji="✖️",
+                    value="close",
+                ),
+            ],
+        )
+        select.callback = self.on_select
+        self.add_item(select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                embed=build_error(
+                    description="Это меню настройки открыл другой администратор. "
+                                "Используйте `.setup`, чтобы открыть своё."
+                ),
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+    async def on_select(self, interaction: discord.Interaction):
+        value = interaction.data["values"][0]
+
+        if value == "create_panel":
+            await self._action_create_panel(interaction)
+        elif value == "recreate_panel":
+            await self._action_recreate_panel(interaction)
+        elif value == "editor":
+            await self._action_open_editor(interaction)
+        elif value == "preview":
+            await self._action_preview(interaction)
+        elif value == "help":
+            await self._action_help(interaction)
+        elif value == "sysinfo":
+            await self._action_sysinfo(interaction)
+        elif value == "close":
+            try:
+                await interaction.response.defer()
+                if self.message:
+                    await self.message.delete()
+            except discord.HTTPException:
+                pass
+
+    async def _action_create_panel(self, interaction: discord.Interaction):
+        embed = _build_panel_embed(self.config)
+        view = TicketPanelView(self.config)
+        try:
+            await interaction.channel.send(embed=embed, view=view)
+            await interaction.response.send_message(
+                embed=build_success(
+                    title="✅ Панель создана",
+                    description=f"Панель тикетов отправлена в {interaction.channel.mention}.",
+                ),
+                ephemeral=True,
+            )
+        except discord.HTTPException as e:
+            await interaction.response.send_message(
+                embed=build_error(description=f"Не удалось создать панель: `{e}`"),
+                ephemeral=True,
+            )
+
+    async def _action_recreate_panel(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        channel = interaction.channel
+        old_panel = None
+        try:
+            async for msg in channel.history(limit=50, oldest_first=False):
+                if msg.author == interaction.guild.me and msg.components:
+                    for row in msg.components:
+                        for comp in getattr(row, "children", []):
+                            if isinstance(comp, discord.SelectMenu) and \
+                                    comp.custom_id == "ego_ticket_panel_select":
+                                old_panel = msg
+                                break
+                        if old_panel:
+                            break
+                if old_panel:
+                    break
+        except discord.HTTPException:
+            pass
+
+        if old_panel:
+            try:
+                await old_panel.delete()
+            except discord.HTTPException:
+                pass
+
+        embed = _build_panel_embed(self.config)
+        view = TicketPanelView(self.config)
+        try:
+            await channel.send(embed=embed, view=view)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                embed=build_error(description=f"Не удалось создать панель: `{e}`"),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.followup.send(
+            embed=build_success(
+                title="✅ Панель пересоздана",
+                description=f"Старая панель удалена, новая создана в {channel.mention}.",
+            ),
+            ephemeral=True,
+        )
+
+    async def _action_open_editor(self, interaction: discord.Interaction):
+        from cogs.editor import EditorDashboardView, _dashboard_embed
+        view = EditorDashboardView(self.config, interaction.user.id)
+        msg = await interaction.channel.send(
+            embed=_dashboard_embed(self.config), view=view
+        )
+        view.message = msg
+        await interaction.response.send_message(
+            embed=build_success(description=f"Редактор открыт в {interaction.channel.mention}."),
+            ephemeral=True,
+        )
+
+    async def _action_preview(self, interaction: discord.Interaction):
+        embed = _build_panel_embed(self.config)
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True,
+        )
+
+    async def _action_help(self, interaction: discord.Interaction):
+        from cogs.help import _build_main_help, HelpView
+        embed = _build_main_help(interaction.user, self.config, self.bot)
+        help_view = HelpView(interaction.user, self.config, interaction.user.id, self.bot)
+        for opt in help_view.select.options:
+            opt.default = (opt.value == "home")
+        await interaction.channel.send(embed=embed, view=help_view)
+        try:
+            msg = await interaction.channel.fetch_message(interaction.channel.last_message_id)
+            help_view.message = msg
+        except discord.HTTPException:
+            pass
+        await interaction.response.send_message(
+            embed=build_success(description="Справка открыта ниже."),
+            ephemeral=True,
+        )
+
+    async def _action_sysinfo(self, interaction: discord.Interaction):
+        from cogs.menu import _build_system_info_embed
+        embed = _build_system_info_embed(self.bot)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+def _build_setup_menu_embed() -> discord.Embed:
+    """Embed меню .setup."""
+    return discord.Embed(
+        title="🛠️ Меню настройки EGO",
+        description=(
+            "## ⚙️ Панель управления ботом\n\n"
+            "Выберите действие в **выпадающем списке** ниже.\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "### 📋 Доступные действия\n"
+            "🎫 **Создать панель** — установить панель тикетов\n"
+            "♻️ **Пересоздать панель** — обновить с удалением старой\n"
+            "🛠️ **Открыть редактор** — настройки бота (вопросы, роли, ключ)\n"
+            "👁 **Превью панели** — посмотреть как выглядит панель\n"
+            "📖 **Справка** — список всех команд\n"
+            "ℹ️ **Информация о боте** — версия, аптайм, сервера\n"
+            "✖️ **Закрыть меню** — убрать это сообщение\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=COLOR_MAIN,
+        timestamp=embeds.now_msk(),
+    ).set_footer(text="EGODiscord System • .setup • Меню настройки")
+
+
+# ============================================================================
 # Cog
 # ============================================================================
 
@@ -692,11 +1074,11 @@ class Tickets(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # --- .setup (только developer_id) ---------------------------------------
+    # --- .setup (только developer_id) — ИНТЕРАКТИВНОЕ МЕНЮ -------------------
     @commands.command(name="setup")
     @commands.guild_only()
     async def setup_cmd(self, ctx: commands.Context):
-        """Установить панель тикетов в текущем канале (только для разработчика)."""
+        """Открыть интерактивное меню настройки бота (только для разработчика)."""
         config = getattr(self.bot, "_config", None)
         if config is None:
             import json
@@ -705,20 +1087,15 @@ class Tickets(commands.Cog):
             self.bot._config = config
 
         if ctx.author.id != config["developer_id"]:
-            # Молча игнорируем, чтобы не раскрывать команду
             try:
                 await ctx.message.delete()
             except discord.HTTPException:
                 pass
             return
 
-        embed = _build_panel_embed(config)
-        view = TicketPanelView(config)
-        try:
-            await ctx.send(embed=embed, view=view)
-        except discord.HTTPException as e:
-            await ctx.send(embed=build_error(description=f"Ошибка: `{e}`"))
-            return
+        view = SetupDropdownView(config, ctx.author.id, self.bot)
+        msg = await ctx.send(embed=_build_setup_menu_embed(), view=view)
+        view.message = msg
 
         try:
             await ctx.message.delete()
@@ -730,7 +1107,6 @@ class Tickets(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.guild is None:
             return
-        # Проверяем, что сообщение в тикете
         ticket = await database.ticket_get(message.channel.id)
         if ticket is None:
             return
@@ -747,7 +1123,6 @@ class Tickets(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    # Загружаем конфиг в атрибут бота, чтобы коги могли к нему обращаться
     import json
     with open("config.json", "r", encoding="utf-8") as f:
         bot._config = json.load(f)

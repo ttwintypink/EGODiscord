@@ -1,17 +1,22 @@
 """
-cogs/help.py — Премиальное оформление команды .help с dropdown-меню.
+cogs/help.py — Понятная справка по командам EGO (для чайников).
 
-Команды:
-    .help              — открыть красивую справку с категориями
-    .help <категория>  — сразу открыть нужную категорию
-                         (tickets / setup / moderation / inticket / dev)
+Структура:
+    .help              — главная страница (что умеет бот)
+    .help <категория>  — сразу открыть нужный раздел
+
+Категории:
+    🏠 Главная     — обзор для всех
+    🛡️ Начало      — как подать заявку (для кандидатов)
+    ⚙️ Настройка    — как настроить бота (для админов)
+    🚫 Модерация   — чёрный список, статистика
+    📞 В тикете     — команды внутри тикета
+    👑 Разработчику — служебные команды
 
 Дизайн:
-    • Главная страница — обзор бота с краткой статистикой
-    • Select-меню с категориями — выбираешь и embed меняется
-    • Кнопки: Главная / Закрыть
-    • Embed строится динамически под права пользователя
-    • Каждая команда показана с синтаксисом, описанием и тегом роли
+    • Простой язык, без жаргона
+    • Конкретные примеры для каждой команды
+    • Адаптация под права пользователя
 """
 from __future__ import annotations
 
@@ -67,94 +72,127 @@ def _is_staff(member: discord.Member, config: dict) -> bool:
 
 
 # ============================================================================
-# Описание команд (текст для embed'ов)
+# Описание команд — формат: (синтаксис, описание, пример, требуемая роль)
 # ============================================================================
 
-# Каждая команда: (синтаксис, описание, требуемая роль, тег для отображения)
-# role: "all" | "staff" | "admin" | "dev"
-
-COMMANDS_TICKETS = [
-    (".setup", "Установить панель тикетов в текущем канале", "dev", "👑 Dev"),
+# Главная — для всех
+COMMANDS_HOME = [
+    (".help", "Открыть это меню справки", ".help", "all"),
+    (".help <категория>", "Сразу открыть нужный раздел",
+     ".help setup", "all"),
+    (".menu", "Открыть меню быстрых действий (если есть права)",
+     ".menu", "admin"),
 ]
 
+# Начало — для кандидатов
+COMMANDS_START = [
+    ("Панель тикетов", "Открой канал с панелью и выбери «Клан» или «Модерация» в меню",
+     "Найти канал с панелью → выбрать категорию → заполнить анкету", "all"),
+    ("Заполнение анкеты", "Отвечай на вопросы честно — модератор видит ответы",
+     "Например: «18 лет» — пишешь в поле только число «18»", "all"),
+    ("Ожидание", "После отправки анкеты ждите — модератор откликнется в тикете",
+     "Не закрывайте Discord, следите за уведомлениями", "all"),
+]
+
+# Настройка — для админов
 COMMANDS_SETUP = [
-    (".editor", "Открыть интерактивный дашборд всех настроек бота "
-                "(вопросы, текст панели, Steam-ключ, роли, каналы, embed-цвет)", "admin", "🛡️ Admin"),
-    (".editor questions", "Быстро открыть раздел вопросов анкеты", "admin", "🛡️ Admin"),
-    (".editor panel-text", "Быстро изменить текст панели тикетов", "admin", "🛡️ Admin"),
-    (".editor color", "Изменить цвет embed-сообщений бота", "admin", "🛡️ Admin"),
-    (".editor reset", "Сбросить все настройки к значениям по умолчанию", "dev", "👑 Dev"),
-    (".menu", "Открыть интерактивное меню быстрых действий", "admin", "🛡️ Admin"),
-    (".setup-voprosy", "Изменить вопросы анкеты (форма на 5 вопросов)", "admin", "🛡️ Admin"),
+    (".editor", "Открыть редактор всех настроек (dropdown-меню)",
+     ".editor", "admin"),
+    (".editor → Вопросы — Клан", "Изменить вопросы анкеты для клана (до 15 вопросов)",
+     ".editor → выбрать «Вопросы — Клан»", "admin"),
+    (".editor → Вопросы — Модерация", "Изменить вопросы анкеты для модерации",
+     ".editor → выбрать «Вопросы — Модерация»", "admin"),
+    (".editor → Steam API ключ", "Вставить ключ Steam (для проверки VAC-банов)",
+     ".editor → выбрать «Steam API ключ»", "admin"),
+    (".editor → Пинг-роли", "Настроить какие роли пинговать при создании тикета",
+     ".editor → «Пинг-роли» → ввести ID через запятую", "admin"),
+    (".editor → Роли персонала", "Указать ID ролей лидер/админ/модер/хелпер",
+     ".editor → «Роли персонала»", "admin"),
+    (".editor → Каналы и категории", "Указать ID каналов логов, категорий тикетов, роли EGO",
+     ".editor → «Каналы и категории»", "admin"),
+    (".editor → Цвет embed", "Изменить цвет сообщений бота (8 пресетов + HEX)",
+     ".editor → «Цвет embed» → ego / red / green / gold", "admin"),
+    (".editor → Приветствие", "Свой текст приветствия в тикете",
+     ".editor → «Приветствие в тикете»", "admin"),
+    (".editor → Брендинг", "Свой URL иконки для embed'ов бота",
+     ".editor → «Брендинг (иконка)»", "admin"),
+    (".editor → Превью панели", "Посмотреть как выглядит панель сейчас",
+     ".editor → «Превью панели»", "admin"),
+    (".editor → Пересоздать панель", "Удалить старую панель и создать новую",
+     ".editor → «Пересоздать панель»", "admin"),
+    (".editor → Сбросить", "Сбросить вопросы/текст/цвет (ID каналов сохранятся)",
+     ".editor → «Сбросить настройки»", "admin"),
 ]
 
+# Модерация
 COMMANDS_MODERATION = [
-    (".blacklist add <ID|@user>", "Добавить пользователя в чёрный список", "admin", "🛡️ Admin"),
-    (".blacklist remove <ID>", "Удалить пользователя из чёрного списка", "admin", "🛡️ Admin"),
-    (".blacklist list", "Показать всех заблокированных пользователей", "staff", "👮 Staff"),
-    (".stats", "Показать ТОП-10 рекрутеров с оценками и реакцией", "staff", "👮 Staff"),
+    (".blacklist add <ID|@user>", "Заблокировать пользователя — не сможет создавать тикеты",
+     ".blacklist add 123456789012345678", "admin"),
+    (".blacklist remove <ID>", "Разблокировать пользователя",
+     ".blacklist remove 123456789012345678", "admin"),
+    (".blacklist list", "Показать всех заблокированных",
+     ".blacklist list", "staff"),
+    (".stats", "Показать ТОП-10 рекрутеров с оценками и реакцией",
+     ".stats", "staff"),
 ]
 
+# Внутри тикета
 COMMANDS_INTICKET = [
-    (".voice", "Создать голосовой канал для собеседования кандидата", "staff", "👮 Staff"),
-    (".call <текст>", "Отправить кандидату сообщение в ЛС от разработчика", "dev", "👑 Dev"),
+    ("🤝 Взять в работу", "Принять тикет на себя — другим модераторам он закроется",
+     "Нажать кнопку в закреплённом сообщении", "staff"),
+    ("🎙️ Обзвон", "Создать голосовой канал для собеседования кандидата",
+     "Нажать кнопку «Обзвон» в закреплённом сообщении", "staff"),
+    ("🔇 Заглушить", "Замьютить кандидата в голосовом канале обзвона",
+     "Нажать кнопку «Заглушить» (после обзвона)", "staff"),
+    ("🔒 Закрыть", "Принять или отклонить заявку с указанием причины",
+     "Нажать «Закрыть» → выбрать Принять/Отклонить → описать причину", "staff"),
+    ("⭐ Оценка", "После закрытия кандидат получает звёздочки для оценки модератора",
+     "Кандидат жмёт 1-5 звёзд в ЛС", "all"),
 ]
 
+# Разработчику
 COMMANDS_DEV = [
-    (".setup", "Установить/пересоздать панель тикетов в текущем канале", "dev", "👑 Dev"),
-    (".ping", "Проверить задержку бота до Discord API", "dev", "👑 Dev"),
-    (".info", "Системная информация: Python, discord.py, сервера, аптайм", "dev", "👑 Dev"),
-    (".unload <ког>", "Выгрузить ког (отключить группу команд)", "dev", "👑 Dev"),
-    (".load <ког>", "Загрузить ког обратно", "dev", "👑 Dev"),
-    (".reload <ког>", "Перезагрузить ког (применить изменения в коде)", "dev", "👑 Dev"),
+    (".setup", "Открыть интерактивное меню настройки бота (dropdown)",
+     ".setup → выбрать действие из списка", "dev"),
+    (".ping", "Проверить задержку бота до Discord API",
+     ".ping", "dev"),
+    (".info", "Системная информация: Python, discord.py, сервера, аптайм",
+     ".info", "dev"),
+    (".unload <ког>", "Выгрузить ког (отключить группу команд)",
+     ".unload tickets", "dev"),
+    (".load <ког>", "Загрузить ког обратно",
+     ".load tickets", "dev"),
+    (".reload <ког>", "Перезагрузить ког (применить изменения в коде)",
+     ".reload tickets", "dev"),
 ]
 
 
 # ============================================================================
-# Сборка embed'ов по категориям
+# Сборка embed'ов
 # ============================================================================
 
 def _filter_commands(commands: list[tuple[str, str, str, str]],
                      member: discord.Member, config: dict) -> list[tuple[str, str, str]]:
-    """Фильтрует команды под права пользователя. Возвращает [(syntax, desc, tag), ...]."""
+    """Фильтрует команды под права пользователя."""
     out = []
-    for syntax, desc, role, tag in commands:
+    for syntax, desc, example, role in commands:
         if role == "all":
-            out.append((syntax, desc, tag))
+            out.append((syntax, desc, example))
         elif role == "staff" and _is_staff(member, config):
-            out.append((syntax, desc, tag))
+            out.append((syntax, desc, example))
         elif role == "admin" and _is_admin(member, config):
-            out.append((syntax, desc, tag))
+            out.append((syntax, desc, example))
         elif role == "dev" and _is_dev(member, config):
-            out.append((syntax, desc, tag))
+            out.append((syntax, desc, example))
     return out
 
 
-def _format_commands_block(commands: list[tuple[str, str, str]]) -> str:
-    """Форматирует список команд в premium-текстовый блок."""
-    if not commands:
-        return "🔒 *У вас нет доступа к командам этой категории.*"
-    lines = []
-    for syntax, desc, tag in commands:
-        lines.append(f"### `{syntax}`")
-        lines.append(f"{desc}")
-        lines.append(f"```fix\n{syntax}\n```")
-    return "\n".join(lines)
-
-
-def _build_main_help(member: discord.Member, config: dict, bot: commands.Bot = None) -> discord.Embed:
-    """Главная страница справки — обзор + select-меню."""
+def _build_main_help(member: discord.Member, config: dict,
+                     bot: commands.Bot = None) -> discord.Embed:
+    """Главная страница — обзор для чайников."""
     is_staff = _is_staff(member, config)
     is_admin = _is_admin(member, config)
     is_dev = _is_dev(member, config)
-
-    # Подсчёт доступных команд
-    total_visible = 0
-    total_all = 0
-    for cmds in (COMMANDS_TICKETS, COMMANDS_SETUP, COMMANDS_MODERATION,
-                 COMMANDS_INTICKET, COMMANDS_DEV):
-        total_all += len(cmds)
-        total_visible += len(_filter_commands(cmds, member, config))
 
     # Статус пользователя
     if is_dev:
@@ -170,30 +208,33 @@ def _build_main_help(member: discord.Member, config: dict, bot: commands.Bot = N
         status_emoji = "👤"
         status_text = "Кандидат"
 
+    # Короткий обзор что умеет бот
     description = (
-        f"## 🛡️ Добро пожаловать в EGODiscord System\n\n"
-        f"👋 Привет, **{member.mention}**!\n"
-        f"┌─────────────────────────────\n"
-        f"│ 🪪 **Статус:** {status_emoji} {status_text}\n"
-        f"│ ⚙️ **Префикс:** `.`\n"
-        f"│ 📊 **Команд доступно:** {total_visible} из {total_all}\n"
-        f"└─────────────────────────────\n\n"
+        f"## 🛡️ EGODiscord System — Справка\n\n"
+        f"Привет, **{member.mention}**! Я бот для системы набора в клан EGO.\n\n"
+        f"### 📌 Что я умею (кратко)\n"
+        f"• 🎫 **Создаю тикеты** для заявок в клан и модерацию\n"
+        f"• 🛡️ **Проверяю Steam** — VAC-баны, часы в Rust, страна\n"
+        f"• 🤝 **Распределяю заявки** между модераторами (claim)\n"
+        f"• 🎙️ **Создаю голосовые каналы** для обзвона\n"
+        f"• 📊 **Считаю статистику** рекрутеров и оценки\n"
+        f"• 📜 **Сохраняю историю** тикетов (HTML-транскрипты)\n"
+        f"• 🔄 **Меняю ник** кандидата на «Steam | Имя» при заявке\n\n"
+        f"### 👤 Ваш статус\n"
+        f"```\n"
+        f"Статус:   {status_emoji} {status_text}\n"
+        f"Префикс:  .  (точка)\n"
+        f"```\n\n"
         f"### 📂 Категории команд\n"
-        f"Выберите категорию в **выпадающем меню** ниже, чтобы посмотреть команды.\n\n"
-        f"{'🎫' if is_dev else '🔒'} **Тикеты** — установка панели тикетов"
-        f"{' *(только разработчик)*' if not is_dev else ''}\n"
-        f"{'⚙️' if is_admin else '🔒'} **Настройка** — редактор бота, вопросы, цвет"
-        f"{' *(только админ)*' if not is_admin else ''}\n"
-        f"{'🚫' if is_staff else '🔒'} **Модерация** — ЧС и статистика"
-        f"{' *(только персонал)*' if not is_staff else ''}\n"
-        f"{'📞' if is_staff else '🔒'} **В тикете** — команды внутри тикета"
-        f"{' *(только персонал)*' if not is_staff else ''}\n"
-        f"{'👑' if is_dev else '🔒'} **Разработчику** — скрытые команды"
-        f"{' *(только dev)*' if not is_dev else ''}\n\n"
+        f"Выберите раздел в **меню ниже**:\n\n"
+        f"🏠 **Главная** — эта страница\n"
+        f"🛡️ **Начало** — как подать заявку (для кандидатов)\n"
+        f"{'⚙️ **Настройка** — как настроить бота *(для админов)*' if is_admin else '🔒 **Настройка** — *(только для админов)*'}\n"
+        f"{'🚫 **Модерация** — чёрный список, статистика *(для персонала)*' if is_staff else '🔒 **Модерация** — *(только для персонала)*'}\n"
+        f"{'📞 **В тикете** — что делать внутри тикета *(для персонала)*' if is_staff else '🔒 **В тикете** — *(только для персонала)*'}\n"
+        f"{'👑 **Разработчику** — скрытые команды' if is_dev else '🔒 **Разработчику** — *(только для разработчика)*'}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 **Совет:** `.help <категория>` — открыть конкретный раздел.\n"
-        f"Доступные категории: `tickets`, `setup`, `moderation`, `inticket`"
-        f"{', `dev`' if is_dev else ''}"
+        f"💡 **Совет:** `.help setup` — открыть конкретный раздел сразу."
     )
 
     embed = discord.Embed(
@@ -203,7 +244,7 @@ def _build_main_help(member: discord.Member, config: dict, bot: commands.Bot = N
         timestamp=embeds.now_msk(),
     )
 
-    # Статистика бота (если есть доступ к bot)
+    # Статистика бота
     if bot is not None:
         try:
             guild_count = len(bot.guilds)
@@ -212,26 +253,16 @@ def _build_main_help(member: discord.Member, config: dict, bot: commands.Bot = N
             embed.add_field(
                 name="📡 Статистика бота",
                 value=(
-                    f"```fix\n"
-                    f"Серверов:    {guild_count}\n"
+                    f"```\n"
+                    f"Серверов:     {guild_count}\n"
                     f"Пользователей: {user_count}\n"
-                    f"Задержка:    {latency}\n"
+                    f"Задержка:     {latency}\n"
                     f"```"
                 ),
                 inline=False,
             )
         except Exception:
             pass
-
-    embed.add_field(
-        name="🚀 Быстрые действия",
-        value=(
-            "• **`.help setup`** — посмотреть как настроить бота\n"
-            "• **`.editor`** — открыть редактор (только админ)\n"
-            "• **`.menu`** — открыть меню быстрых действий (только админ)"
-        ),
-        inline=False,
-    )
 
     embed.set_thumbnail(url=member.guild.me.display_avatar.url)
     embed.set_footer(text=f"EGODiscord System • .help • {msk_timestamp()}")
@@ -242,20 +273,22 @@ def _build_category_help(category: str, member: discord.Member,
                          config: dict) -> Optional[discord.Embed]:
     """Embed для конкретной категории."""
     cats = {
-        "tickets": ("🎫 Тикеты", "Управление панелью тикетов", COMMANDS_TICKETS,
-                    "Раздел доступен только разработчику бота."),
-        "setup": ("⚙️ Настройка бота", "Редактор вопросов, текста панели, ключей, ролей и embed-цвета",
+        "home": ("🏠 Главная", "Обзор бота и список категорий",
+                  COMMANDS_HOME, "Доступно всем."),
+        "start": ("🛡️ Начало", "Как подать заявку (для кандидатов)",
+                  COMMANDS_START, "Доступно всем."),
+        "setup": ("⚙️ Настройка бота", "Как настроить бота — для администраторов",
                   COMMANDS_SETUP,
                   "Раздел доступен только администраторам (лидер, со-лидер, администратор)."),
         "moderation": ("🚫 Модерация", "Чёрный список и статистика рекрутеров",
                        COMMANDS_MODERATION,
                        "Раздел доступен всему персоналу (лидер, со-лидер, "
                        "администратор, модератор, хелпер)."),
-        "inticket": ("📞 Внутри тикета", "Команды, доступные только в канале тикета",
+        "inticket": ("📞 Внутри тикета", "Что делать внутри тикета",
                      COMMANDS_INTICKET,
-                     "Раздел доступен персоналу и разработчику."),
-        "dev": ("👑 Разработчику", "Скрытые команды разработчика бота", COMMANDS_DEV,
-                "Раздел доступен только разработчику."),
+                     "Раздел доступен персоналу и кандидату."),
+        "dev": ("👑 Разработчику", "Скрытые команды разработчика бота",
+                COMMANDS_DEV, "Раздел доступен только разработчику."),
     }
 
     if category not in cats:
@@ -279,30 +312,64 @@ def _build_category_help(category: str, member: discord.Member,
         embed.set_footer(text=f"EGODiscord System • .help {category} • {msk_timestamp()}")
         return embed
 
-    # Формируем поля — каждая команда в отдельном field
-    embed = discord.Embed(
-        title=f"{title} — команды",
-        description=(
+    # Спец-формат для раздела "Начало" — там не команды, а инструкции
+    if category == "start":
+        description = (
             f"## {title}\n"
             f"### {subtitle}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        ),
-        color=COLOR_MAIN,
-        timestamp=embeds.now_msk(),
-    )
-
-    for syntax, desc, tag in filtered:
-        embed.add_field(
-            name=f"`{syntax}`  {tag}",
-            value=desc,
-            inline=False,
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         )
-
-    embed.add_field(
-        name="📊 Статистика раздела",
-        value=f"Доступных команд: **{len(filtered)}** из **{len(commands_list)}**",
-        inline=False,
-    )
+        for syntax, desc, example in filtered:
+            description += f"### {syntax}\n{desc}\n\n"
+            description += f"**Пример:** {example}\n\n"
+            description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        description += (
+            "💡 **Если что-то непонятно** — спроси в чате или у модератора. "
+            "Мы поможем!"
+        )
+        embed = discord.Embed(
+            title=f"{title} — инструкция",
+            description=description,
+            color=COLOR_MAIN,
+            timestamp=embeds.now_msk(),
+        )
+    elif category == "inticket":
+        # Спец-формат для команд в тикете — там действия
+        description = (
+            f"## {title}\n"
+            f"### {subtitle}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Все действия выполняются кнопками в **закреплённом сообщении** "
+            f"тикет-канала. Не нужно писать команды — просто нажимай кнопки.\n\n"
+        )
+        for syntax, desc, example in filtered:
+            description += f"### {syntax}\n{desc}\n\n"
+            description += f"**Как сделать:** {example}\n\n"
+            description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        embed = discord.Embed(
+            title=f"{title} — действия",
+            description=description,
+            color=COLOR_MAIN,
+            timestamp=embeds.now_msk(),
+        )
+    else:
+        # Стандартный формат — команды с примерами
+        description = (
+            f"## {title}\n"
+            f"### {subtitle}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        )
+        for syntax, desc, example in filtered:
+            description += f"### `{syntax}`\n{desc}\n\n"
+            description += f"**Пример:** `{example}`\n\n"
+            description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        description += f"📊 **Доступных команд:** {len(filtered)} из {len(commands_list)}"
+        embed = discord.Embed(
+            title=f"{title} — команды",
+            description=description,
+            color=COLOR_MAIN,
+            timestamp=embeds.now_msk(),
+        )
 
     embed.set_thumbnail(url=member.guild.me.display_avatar.url)
     embed.set_footer(text=f"EGODiscord System • .help {category} • {msk_timestamp()}")
@@ -328,14 +395,14 @@ class HelpCategorySelect(ui.Select):
                 value="home",
             ),
             discord.SelectOption(
-                label="Тикеты",
-                description="Установка панели тикетов",
-                emoji="🎫",
-                value="tickets",
+                label="Начало (для кандидатов)",
+                description="Как подать заявку — пошагово",
+                emoji="🛡️",
+                value="start",
             ),
             discord.SelectOption(
                 label="Настройка",
-                description="Редактор бота, вопросы, цвет",
+                description="Как настроить бота (для админов)",
                 emoji="⚙️",
                 value="setup",
             ),
@@ -347,7 +414,7 @@ class HelpCategorySelect(ui.Select):
             ),
             discord.SelectOption(
                 label="В тикете",
-                description="Команды внутри тикета",
+                description="Что делать внутри тикета",
                 emoji="📞",
                 value="inticket",
             ),
@@ -366,9 +433,7 @@ class HelpCategorySelect(ui.Select):
 
         filtered_options = []
         for opt in options:
-            if opt.value == "tickets" and not is_dev:
-                opt.description = "🔒 Только для разработчика"
-            elif opt.value == "setup" and not is_admin:
+            if opt.value == "setup" and not is_admin:
                 opt.description = "🔒 Только для администратора"
             elif opt.value == "moderation" and not is_staff:
                 opt.description = "🔒 Только для персонала"
@@ -389,7 +454,8 @@ class HelpCategorySelect(ui.Select):
     async def callback(self, interaction: discord.Interaction):
         value = self.values[0]
         if value == "home":
-            embed = _build_main_help(self.member, self.config)
+            embed = _build_main_help(self.member, self.config, self.view.bot
+                                      if hasattr(self.view, "bot") else None)
         else:
             embed = _build_category_help(value, self.member, self.config)
             if embed is None:
@@ -413,7 +479,7 @@ class HelpView(ui.View):
 
     def __init__(self, member: discord.Member, config: dict, owner_id: int,
                  bot: commands.Bot = None):
-        super().__init__(timeout=300)  # 5 минут
+        super().__init__(timeout=300)
         self.member = member
         self.config = config
         self.owner_id = owner_id
@@ -425,15 +491,13 @@ class HelpView(ui.View):
         self.add_item(self.select)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # Только тот, кто открыл справку, может переключать категории
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message(
                 embed=build_info(
                     title="ℹ️ Это не ваша справка",
                     description=(
                         f"Используйте `.help`, чтобы открыть собственную справку.\n"
-                        f"Справка адаптируется под права пользователя — у каждого "
-                        f"свой список видимых команд."
+                        f"Справка адаптируется под права — у каждого свой список команд."
                     ),
                 ),
                 ephemeral=True,
@@ -442,7 +506,6 @@ class HelpView(ui.View):
         return True
 
     async def on_timeout(self):
-        """Через 5 минут отключаем все элементы."""
         for item in self.children:
             item.disabled = True
         if self.message:
@@ -483,7 +546,7 @@ class HelpView(ui.View):
 # ============================================================================
 
 class Help(commands.Cog):
-    """Красивая справка по командам с select-меню."""
+    """Понятная справка по командам бота."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -495,24 +558,42 @@ class Help(commands.Cog):
     @commands.guild_only()
     async def help_cmd(self, ctx: commands.Context, category: Optional[str] = None):
         """
-        Показывает красивую справку по всем командам бота.
+        Показывает понятную справку по всем командам бота.
 
         Использование:
-            .help              — открыть главную страницу справки
-            .help setup        — сразу открыть раздел «Настройка»
-            .help moderation   — сразу открыть раздел «Модерация»
+            .help              — открыть главную страницу
+            .help start        — как подать заявку (для кандидатов)
+            .help setup        — как настроить бота (для админов)
+            .help moderation   — чёрный список и статистика
+            .help inticket     — что делать в тикете
+            .help dev          — служебные команды (только для разработчика)
 
-        Список доступных категорий: tickets, setup, moderation, inticket, dev
+        Категории: home, start, setup, moderation, inticket, dev
         """
         config = self._config()
         member = ctx.author
 
         # Нормализуем категорию
         category_norm = (category or "").strip().lower()
-        valid_cats = {"tickets", "setup", "moderation", "inticket", "dev"}
+        # Синонимы
+        aliases = {
+            "tickets": "setup",  # обратная совместимость
+            "main": "home",
+            "кандидат": "start",
+            "кандидату": "start",
+            "начало": "start",
+            "настройка": "setup",
+            "модерация": "moderation",
+            "тикет": "inticket",
+            "втикете": "inticket",
+            "in-ticket": "inticket",
+        }
+        if category_norm in aliases:
+            category_norm = aliases[category_norm]
+
+        valid_cats = {"home", "start", "setup", "moderation", "inticket", "dev"}
 
         if category_norm and category_norm in valid_cats:
-            # Сразу открываем нужную категорию
             embed = _build_category_help(category_norm, member, config)
             if embed is None:
                 await ctx.send(
@@ -521,34 +602,28 @@ class Help(commands.Cog):
                 )
                 return
             view = HelpView(member, config, owner_id=member.id, bot=self.bot)
-            # Выбираем нужную категорию в select по умолчанию
             for opt in view.select.options:
                 opt.default = (opt.value == category_norm)
             msg = await ctx.send(embed=embed, view=view)
             view.message = msg
         else:
-            # Главная страница
             if category_norm and category_norm not in valid_cats:
-                # Пользователь ввёл категорию, но её нет — подсказываем
                 hint = (
-                    f"Категория `{category}` не найдена.\n"
-                    f"Доступные категории: `tickets`, `setup`, `moderation`, `inticket`"
-                    f"{', `dev`' if _is_dev(member, config) else ''}\n\n"
+                    f"⚠️ Категория `{category}` не найдена.\n"
+                    f"Доступные категории: `home`, `start`, `setup`, "
+                    f"`moderation`, `inticket`{', `dev`' if _is_dev(member, config) else ''}\n\n"
                     f"Показываю главную страницу справки."
                 )
                 embed = _build_main_help(member, config, self.bot)
-                # Дописываем подсказку наверх
-                embed.description = f"⚠️ {hint}\n\n" + (embed.description or "")
+                embed.description = f"{hint}\n\n" + (embed.description or "")
             else:
                 embed = _build_main_help(member, config, self.bot)
             view = HelpView(member, config, owner_id=member.id, bot=self.bot)
-            # Главная выбрана по умолчанию
             for opt in view.select.options:
                 opt.default = (opt.value == "home")
             msg = await ctx.send(embed=embed, view=view)
             view.message = msg
 
-        # Удаляем сообщение с командой
         try:
             await ctx.message.delete()
         except discord.HTTPException:

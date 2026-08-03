@@ -27,7 +27,7 @@ DB_PATH = "database.db"
 # ============================================================================
 
 async def init_db() -> None:
-    """Создаёт все таблицы, если их ещё нет."""
+    """Создаёт все таблицы, если их ещё нет, и выполняет миграции."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(
             """
@@ -41,16 +41,17 @@ async def init_db() -> None:
             CREATE TABLE IF NOT EXISTS active_tickets (
                 channel_id      INTEGER PRIMARY KEY,
                 user_id         INTEGER NOT NULL,
-                type            TEXT NOT NULL,         -- 'clan' | 'mod'
+                type            TEXT NOT NULL,
                 created_at      INTEGER NOT NULL,
                 claimed_at      INTEGER,
                 claimed_by      INTEGER,
-                status          TEXT DEFAULT 'open',   -- 'open' | 'accepted' | 'rejected' | 'restored'
+                status          TEXT DEFAULT 'open',
                 voice_channel_id INTEGER,
                 transcript_path TEXT,
                 form_text       TEXT,
                 last_message_at INTEGER,
-                warned_inactive INTEGER DEFAULT 0
+                warned_inactive INTEGER DEFAULT 0,
+                original_nickname TEXT
             );
 
             CREATE TABLE IF NOT EXISTS stats (
@@ -58,7 +59,7 @@ async def init_db() -> None:
                 ticket_count        INTEGER DEFAULT 0,
                 total_stars         INTEGER DEFAULT 0,
                 ratings_count       INTEGER DEFAULT 0,
-                total_reaction_time INTEGER DEFAULT 0,   -- в секундах
+                total_reaction_time INTEGER DEFAULT 0,
                 last_activity       INTEGER
             );
 
@@ -79,6 +80,16 @@ async def init_db() -> None:
             """
         )
         await db.commit()
+
+        # --- Миграции (добавляем колонки, если их нет) ---
+        # Проверяем наличие колонки original_nickname
+        async with db.execute("PRAGMA table_info(active_tickets)") as cur:
+            columns = [row[1] for row in await cur.fetchall()]
+        if "original_nickname" not in columns:
+            await db.execute(
+                "ALTER TABLE active_tickets ADD COLUMN original_nickname TEXT"
+            )
+            await db.commit()
 
 
 # ============================================================================
@@ -125,13 +136,15 @@ async def blacklist_list() -> list[tuple[int, int, int, str]]:
 # ============================================================================
 
 async def ticket_create(channel_id: int, user_id: int, ticket_type: str,
-                        form_text: str = "") -> None:
+                        form_text: str = "",
+                        original_nickname: str = "") -> None:
     now = int(time.time())
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO active_tickets(channel_id, user_id, type, created_at, "
-            "status, form_text, last_message_at) VALUES(?, ?, ?, ?, 'open', ?, ?)",
-            (channel_id, user_id, ticket_type, now, form_text, now),
+            "status, form_text, last_message_at, original_nickname) "
+            "VALUES(?, ?, ?, ?, 'open', ?, ?, ?)",
+            (channel_id, user_id, ticket_type, now, form_text, now, original_nickname),
         )
         await db.commit()
 

@@ -3,8 +3,94 @@
   "steam_api_key": "7B429F2A48B86FA526DF37DA357C7A55",
   "developer_id": 1105559182624694393,
   "ticket_panel_text": "🎫 СИСТЕМА НАБОРА КЛАНА EGO\n\nВыберите интересующую вас категорию в меню ниже...",
-  "questions_clan": ["Ваш SteamID или ссылка на профиль Steam?", "Сколько вам лет?", "Опыт игры в Rust (часы)?"],
-  "questions_mod": ["Почему хотите стать модератором?", "Сколько времени готовы уделять?"],
+  "questions_clan": [
+    {
+      "title": "Ваше настоящее имя",
+      "subtitle": "Например: Александр (это будет в вашем нике на сервере)",
+      "max_length": 30,
+      "min_length": 2,
+      "multiline": false,
+      "required": true,
+      "is_real_name": true
+    },
+    {
+      "title": "Ваш SteamID или ссылка на профиль Steam",
+      "subtitle": "7656119... или https://steamcommunity.com/id/...",
+      "max_length": 100,
+      "min_length": 5,
+      "multiline": false,
+      "required": true,
+      "is_steam": true
+    },
+    {
+      "title": "Сколько вам лет",
+      "subtitle": "Напишите свой возраст (только число)",
+      "max_length": 2,
+      "min_length": 1,
+      "multiline": false,
+      "required": true
+    },
+    {
+      "title": "Опыт игры в Rust",
+      "subtitle": "Сколько часов наиграли? Опишите кратко.",
+      "max_length": 500,
+      "min_length": 1,
+      "multiline": true,
+      "required": true
+    },
+    {
+      "title": "Почему хотите вступить в EGO",
+      "subtitle": "Расскажите, чем вас привлёк клан",
+      "max_length": 1000,
+      "min_length": 10,
+      "multiline": true,
+      "required": true
+    }
+  ],
+  "questions_mod": [
+    {
+      "title": "Ваше настоящее имя",
+      "subtitle": "Например: Александр (это будет в вашем нике на сервере)",
+      "max_length": 30,
+      "min_length": 2,
+      "multiline": false,
+      "required": true,
+      "is_real_name": true
+    },
+    {
+      "title": "Ваш SteamID или ссылка на профиль Steam",
+      "subtitle": "7656119... или https://steamcommunity.com/id/...",
+      "max_length": 100,
+      "min_length": 5,
+      "multiline": false,
+      "required": true,
+      "is_steam": true
+    },
+    {
+      "title": "Сколько вам лет",
+      "subtitle": "Напишите свой возраст (только число)",
+      "max_length": 2,
+      "min_length": 1,
+      "multiline": false,
+      "required": true
+    },
+    {
+      "title": "Почему хотите стать модератором",
+      "subtitle": "Расскажите о своём опыте и мотивации",
+      "max_length": 1000,
+      "min_length": 20,
+      "multiline": true,
+      "required": true
+    },
+    {
+      "title": "Сколько времени готовы уделять модерации",
+      "subtitle": "Сколько часов в день/неделю",
+      "max_length": 200,
+      "min_length": 3,
+      "multiline": false,
+      "required": true
+    }
+  ],
   "category_clan_id": 1533566111684235504,
   "category_mod_id": 1533566150015848588,
   "log_channel_id": 1533068805771628637,

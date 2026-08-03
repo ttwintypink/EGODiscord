@@ -1,23 +1,25 @@
 """
 cogs/editor.py — Удобный редактор бота для администрации EGO.
 
-Команды:
-    .editor              — открыть интерактивный дашборд настройки бота
-                           (кнопки: вопросы клана, вопросы модеров, текст панели,
-                            пинг-роли, роли персонала, ключ Steam, каналы/категории)
-    .editor questions    — то же самое, что и кнопка «Вопросы» (без дашборда)
-    .editor panel-text   — то же самое, что и кнопка «Текст панели»
+Изменения:
+    • Дашборд теперь через DROPDOWN-меню вместо кучи кнопок
+    • Редактор вопросов полностью переписан:
+        - Поддержка до 15 вопросов (вместо 5)
+        - Каждый вопрос имеет: title, subtitle (placeholder), max_length,
+          min_length, multiline, required, is_real_name, is_steam
+        - Редактирование по индексу: выбрал в dropdown нужный вопрос → модалка
+    • Все изменения сразу сохраняются в config.json и bot._config
 
-Дашборд использует кнопки с цветовой кодировкой и live-предпросмотром текущих значений.
-Все изменения сразу сохраняются в config.json И в атрибуте bot._config,
-поэтому применяются мгновенно (без перезапуска бота).
+Команды:
+    .editor              — открыть дашборд (dropdown)
+    .editor questions    — открыть раздел вопросов напрямую
 """
 from __future__ import annotations
 
 import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 import discord
 from discord import ui
@@ -42,7 +44,6 @@ CONFIG_PATH = Path("config.json")
 def _save_config(config: dict) -> bool:
     """Атомарно сохраняет config.json. Возвращает True при успехе."""
     try:
-        # Пишем во временный файл, потом переименовываем — атомарность.
         tmp = CONFIG_PATH.with_suffix(".json.tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
@@ -94,42 +95,756 @@ def _roles_to_str(role_ids: list, guild: discord.Guild) -> str:
     return "\n".join(parts) if parts else "—"
 
 
+def _normalize_question(q: Any) -> dict:
+    """Приводит вопрос к единому формату dict."""
+    if isinstance(q, str):
+        return {
+            "title": q[:45],
+            "subtitle": "",
+            "max_length": 500,
+            "min_length": 1,
+            "multiline": len(q) > 30,
+            "required": True,
+            "is_real_name": False,
+            "is_steam": "steam" in q.lower(),
+        }
+    if isinstance(q, dict):
+        return {
+            "title": str(q.get("title", "Вопрос"))[:45],
+            "subtitle": str(q.get("subtitle", ""))[:100],
+            "max_length": min(int(q.get("max_length", 500)), 4000),
+            "min_length": max(int(q.get("min_length", 0)), 0),
+            "multiline": bool(q.get("multiline", False)),
+            "required": bool(q.get("required", True)),
+            "is_real_name": bool(q.get("is_real_name", False)),
+            "is_steam": bool(q.get("is_steam", False)),
+        }
+    return {
+        "title": "Вопрос",
+        "subtitle": "",
+        "max_length": 500,
+        "min_length": 1,
+        "multiline": False,
+        "required": True,
+        "is_real_name": False,
+        "is_steam": False,
+    }
+
+
+def _normalize_questions(questions: list) -> list[dict]:
+    if not isinstance(questions, list):
+        return []
+    return [_normalize_question(q) for q in questions if q]
+
+
 # ============================================================================
-# Модалки редактирования
+# Дашборд (главное меню) — DROPDOWN вместо кучи кнопок
 # ============================================================================
 
-class EditQuestionsModal(ui.Modal):
-    """Редактирование списка вопросов анкеты (до 5)."""
+def _dashboard_embed(config: dict) -> discord.Embed:
+    """Собирает embed-превью текущих настроек бота."""
+    questions_clan = _normalize_questions(config.get("questions_clan", []))
+    questions_mod = _normalize_questions(config.get("questions_mod", []))
+    steam_key = config.get("steam_api_key", "")
+    masked_key = (steam_key[:6] + "…" + steam_key[-4:]) if len(steam_key) > 10 else "—"
+    roles_cfg = config.get("roles", {})
 
-    def __init__(self, config: dict, ticket_type: str, parent_view: "EditorDashboardView"):
-        title = "🛡️ Вопросы анкеты — Клан" if ticket_type == "clan" \
-                else "👑 Вопросы анкеты — Модерация"
-        super().__init__(title=title[:45])
+    embed_color_str = config.get("embed_color", "5865F2")
+    try:
+        embed_color_int = int(embed_color_str, 16)
+    except (ValueError, TypeError):
+        embed_color_int = 0x5865F2
+        embed_color_str = "5865F2"
+
+    welcome_text = config.get("ticket_welcome_text", "")
+    branding_url = config.get("brand_thumbnail_url", "")
+
+    embed = discord.Embed(
+        title="🛠️ Редактор бота EGO",
+        description=(
+            f"## ⚙️ Текущие настройки\n\n"
+            f"Все изменения применяются **мгновенно** — без перезапуска бота.\n"
+            f"Выберите раздел в **выпадающем списке** ниже.\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"### 📋 Анкеты\n"
+            f"🛡️ **Вопросы (Клан):** {len(questions_clan)} шт.\n"
+            f"👑 **Вопросы (Модерация):** {len(questions_mod)} шт.\n\n"
+            f"### 🎨 Дизайн\n"
+            f"📝 **Текст панели:** {_truncate(config.get('ticket_panel_text', ''), 50)}\n"
+            f"👋 **Приветствие:** {_truncate(welcome_text or '_(по умолчанию)_', 50)}\n"
+            f"🎨 **Цвет embed:** `#{embed_color_str}`\n"
+            f"🖼️ **Брендинг:** {'✅ задан' if branding_url else '_(по умолчанию)_'}\n\n"
+            f"### 🔑 Ключи и роли\n"
+            f"🔑 **Steam API:** `{masked_key}`\n"
+            f"🔔 **Пинг ролей (Клан/Модер):** "
+            f"{len(config.get('ping_roles_clan', []))} / "
+            f"{len(config.get('ping_roles_mod', []))}\n"
+            f"👑 **Ролей персонала:** {len([k for k, v in roles_cfg.items() if v])} / 7\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👇 Выберите раздел в меню ниже"
+        ),
+        color=embed_color_int,
+        timestamp=embeds.now_msk(),
+    )
+    embed.set_footer(text="EGODiscord System • Editor Dashboard")
+    if branding_url:
+        embed.set_thumbnail(url=branding_url)
+    return embed
+
+
+class EditorDashboardView(ui.View):
+    """Дашборд редактора с DROPDOWN-меню вместо кучи кнопок."""
+
+    def __init__(self, config: dict, owner_id: int):
+        super().__init__(timeout=300)
+        self.config = config
+        self.owner_id = owner_id
+        self.message: Optional[discord.Message] = None
+
+        # Создаём dropdown с разделами
+        select = ui.Select(
+            placeholder="🛠️ Выберите раздел для настройки...",
+            min_values=1, max_values=1,
+            options=[
+                discord.SelectOption(
+                    label="Вопросы — Клан",
+                    description=f"Редактировать анкету клана ({len(_normalize_questions(config.get('questions_clan', [])))} шт.)",
+                    emoji="🛡️",
+                    value="q_clan",
+                ),
+                discord.SelectOption(
+                    label="Вопросы — Модерация",
+                    description=f"Редактировать анкету модерации ({len(_normalize_questions(config.get('questions_mod', [])))} шт.)",
+                    emoji="👑",
+                    value="q_mod",
+                ),
+                discord.SelectOption(
+                    label="Текст панели",
+                    description="Текст панели тикетов (Markdown)",
+                    emoji="📝",
+                    value="panel_text",
+                ),
+                discord.SelectOption(
+                    label="Steam API ключ",
+                    description="Ключ для проверки VAC/часов в Rust",
+                    emoji="🔑",
+                    value="steam_key",
+                ),
+                discord.SelectOption(
+                    label="Пинг-роли",
+                    description="Какие роли пинговать при создании тикета",
+                    emoji="🔔",
+                    value="ping_roles",
+                ),
+                discord.SelectOption(
+                    label="Роли персонала",
+                    description="ID ролей лидер/админ/модератор/хелпер",
+                    emoji="👑",
+                    value="staff_roles",
+                ),
+                discord.SelectOption(
+                    label="Каналы и категории",
+                    description="ID каналов логов, категорий тикетов, роль EGO",
+                    emoji="📁",
+                    value="channels",
+                ),
+                discord.SelectOption(
+                    label="Цвет embed",
+                    description="Цвет всех embed'ов бота (8 пресетов + HEX)",
+                    emoji="🎨",
+                    value="color",
+                ),
+                discord.SelectOption(
+                    label="Приветствие в тикете",
+                    description="Кастомный текст приветствия",
+                    emoji="👋",
+                    value="welcome",
+                ),
+                discord.SelectOption(
+                    label="Брендинг (иконка)",
+                    description="URL иконки для embed'ов",
+                    emoji="🖼️",
+                    value="branding",
+                ),
+                discord.SelectOption(
+                    label="👁 Превью панели",
+                    description="Посмотреть как выглядит панель",
+                    emoji="👁",
+                    value="preview",
+                ),
+                discord.SelectOption(
+                    label="♻️ Пересоздать панель",
+                    description="Удалить старую панель и создать новую",
+                    emoji="♻️",
+                    value="recreate",
+                ),
+                discord.SelectOption(
+                    label="⚠️ Сбросить настройки",
+                    description="Сброс вопросов, текста, цвета (ID каналов сохранятся)",
+                    emoji="⚠️",
+                    value="reset",
+                ),
+                discord.SelectOption(
+                    label="✖️ Закрыть редактор",
+                    description="Убрать это сообщение",
+                    emoji="✖️",
+                    value="close",
+                ),
+            ],
+        )
+        select.callback = self.on_select
+        self.add_item(select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                embed=build_error(
+                    description="Этот дашборд открыл другой администратор. "
+                                "Используйте `.editor`, чтобы открыть свой."
+                ),
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+    async def on_select(self, interaction: discord.Interaction):
+        value = interaction.data["values"][0]
+
+        if value == "q_clan":
+            await self._open_questions_editor(interaction, "clan")
+        elif value == "q_mod":
+            await self._open_questions_editor(interaction, "mod")
+        elif value == "panel_text":
+            await interaction.response.send_modal(EditPanelTextModal(self.config, self))
+        elif value == "steam_key":
+            await interaction.response.send_modal(EditSteamKeyModal(self.config, self))
+        elif value == "ping_roles":
+            await interaction.response.send_modal(EditPingRolesModal(self.config, self))
+        elif value == "staff_roles":
+            await interaction.response.send_modal(EditRolesModal(self.config, self))
+        elif value == "channels":
+            await interaction.response.send_modal(EditChannelIdsModal(self.config, self))
+        elif value == "color":
+            await interaction.response.send_modal(EditEmbedColorModal(self.config, self))
+        elif value == "welcome":
+            await interaction.response.send_modal(EditWelcomeMessageModal(self.config, self))
+        elif value == "branding":
+            await interaction.response.send_modal(EditBrandingModal(self.config, self))
+        elif value == "preview":
+            await self._preview_panel(interaction)
+        elif value == "recreate":
+            await self._recreate_panel(interaction)
+        elif value == "reset":
+            await self._reset_settings(interaction)
+        elif value == "close":
+            try:
+                await interaction.response.edit_message(view=None)
+            except discord.HTTPException:
+                pass
+
+    async def _open_questions_editor(self, interaction: discord.Interaction,
+                                      ticket_type: str):
+        """Открывает dropdown-редактор вопросов для выбранного типа."""
+        view = QuestionsEditorView(self.config, ticket_type, self)
+        msg = await interaction.response.send_message(
+            embed=_build_questions_editor_embed(self.config, ticket_type),
+            view=view,
+            ephemeral=True,
+        )
+        # discord.py 2.x: response.send_message для modal-followup
+        # сохраняем message через followup
+        try:
+            view.message = await interaction.original_response()
+        except (discord.HTTPException, AttributeError):
+            pass
+
+    async def _preview_panel(self, interaction: discord.Interaction):
+        from cogs.tickets import _build_panel_embed
+        embed = _build_panel_embed(self.config)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def _recreate_panel(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        channel = interaction.channel
+        old_panel = None
+        try:
+            async for msg in channel.history(limit=50, oldest_first=False):
+                if msg.author == interaction.guild.me and msg.components:
+                    for row in msg.components:
+                        for comp in getattr(row, "children", []):
+                            if isinstance(comp, discord.SelectMenu) and \
+                                    comp.custom_id == "ego_ticket_panel_select":
+                                old_panel = msg
+                                break
+                        if old_panel:
+                            break
+                if old_panel:
+                    break
+        except discord.HTTPException:
+            pass
+
+        if old_panel:
+            try:
+                await old_panel.delete()
+            except discord.HTTPException:
+                pass
+
+        from cogs.tickets import TicketPanelView, _build_panel_embed
+        embed = _build_panel_embed(self.config)
+        view = TicketPanelView(self.config)
+        try:
+            await channel.send(embed=embed, view=view)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                embed=build_error(description=f"Не удалось создать панель: `{e}`"),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.followup.send(
+            embed=build_success(
+                title="✅ Панель пересоздана",
+                description=f"Старая панель удалена, новая создана в {channel.mention}.",
+            ),
+            ephemeral=True,
+        )
+
+    async def _reset_settings(self, interaction: discord.Interaction):
+        confirm_view = ConfirmResetView(self)
+        await interaction.response.send_message(
+            embed=build_warning(
+                title="⚠️ Подтверждение сброса",
+                description=(
+                    "Будут сброшены:\n"
+                    "• Вопросы анкеты (клан и модерация)\n"
+                    "• Текст панели тикетов\n"
+                    "• Приветствие в тикете\n"
+                    "• Цвет embed'ов\n"
+                    "• Брендинг (иконка)\n"
+                    "• Пинг-роли\n\n"
+                    "**Сохранятся:** ID каналов и категорий, роли персонала, "
+                    "Steam API ключ, developer_id."
+                ),
+            ),
+            view=confirm_view,
+            ephemeral=True,
+        )
+
+
+# ============================================================================
+# Редактор вопросов — DROPDOWN для выбора вопроса + модалка
+# ============================================================================
+
+def _build_questions_editor_embed(config: dict, ticket_type: str) -> discord.Embed:
+    """Embed со списком вопросов и подсказками."""
+    is_clan = ticket_type == "clan"
+    key = "questions_clan" if is_clan else "questions_mod"
+    questions = _normalize_questions(config.get(key, []))
+
+    type_emoji = "🛡️" if is_clan else "👑"
+    type_label = "Клан" if is_clan else "Модерация"
+
+    description = (
+        f"## {type_emoji} Редактор вопросов — {type_label}\n\n"
+        f"**Текущее количество вопросов:** {len(questions)} из 15\n\n"
+        f"### 📋 Текущие вопросы\n"
+    )
+
+    if not questions:
+        description += "_Нет вопросов. Добавьте первый через меню ниже._\n"
+    else:
+        for i, q in enumerate(questions, 1):
+            flags = []
+            if q.get("is_real_name"):
+                flags.append("ИМЯ")
+            if q.get("is_steam"):
+                flags.append("STEAM")
+            if q.get("multiline"):
+                flags.append("многостр.")
+            if not q.get("required"):
+                flags.append("необяз.")
+            flags_str = f" [{' • '.join(flags)}]" if flags else ""
+            description += (
+                f"**{i}.** {q['title']} `{q.get('max_length', 500)}`{flags_str}\n"
+                f"   _{q.get('subtitle', '') or '—'}_\n"
+            )
+
+    description += (
+        f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"### 👇 Выберите действие в меню\n"
+        f"• **Изменить вопрос №X** — открыть модалку редактирования\n"
+        f"• **➕ Добавить вопрос** — создать новый (макс. 15)\n"
+        f"• **❌ Удалить вопрос №X** — удалить по индексу\n"
+        f"• **⬆ Вверх / ⬇ Вниз** — переместить вопрос\n"
+        f"• **↩ Назад** — вернуться в главное меню\n"
+    )
+
+    embed = discord.Embed(
+        title=f"{type_emoji} Вопросы — {type_label}",
+        description=description,
+        color=COLOR_MAIN,
+        timestamp=embeds.now_msk(),
+    )
+    embed.set_footer(text="EGODiscord System • Questions Editor")
+    return embed
+
+
+class QuestionsEditorView(ui.View):
+    """Dropdown-меню для редактирования вопросов."""
+
+    def __init__(self, config: dict, ticket_type: str,
+                 parent_view: EditorDashboardView):
+        super().__init__(timeout=300)
         self.config = config
         self.ticket_type = ticket_type
         self.parent_view = parent_view
+        self.message: Optional[discord.Message] = None
 
         key = "questions_clan" if ticket_type == "clan" else "questions_mod"
-        current = config.get(key, [])
-        self._inputs: list[ui.TextInput] = []
-        for i in range(5):
-            cur = current[i] if i < len(current) else ""
-            inp = ui.TextInput(
-                label=f"Вопрос {i + 1}",
-                placeholder="Пусто = удалить этот вопрос",
-                default=cur,
-                required=False,
-                max_length=200,
-                style=discord.TextStyle.short,
+        questions = _normalize_questions(config.get(key, []))
+
+        # Строим опции: edit N, add, delete N, move up/down N, back
+        options = []
+
+        # Действия для каждого вопроса
+        for i, q in enumerate(questions, 1):
+            title_short = q["title"][:40] if q["title"] else f"Вопрос {i}"
+            options.append(discord.SelectOption(
+                label=f"✏️ Изменить #{i}: {title_short}",
+                description=f"Редактировать вопрос (сейчас: max {q.get('max_length', 500)} симв.)",
+                value=f"edit_{i}",
+            ))
+
+        # Добавить
+        if len(questions) < 15:
+            options.append(discord.SelectOption(
+                label="➕ Добавить новый вопрос",
+                description=f"Создать вопрос №{len(questions) + 1} (макс. 15)",
+                value="add",
+            ))
+
+        # Удалить
+        for i, q in enumerate(questions, 1):
+            title_short = q["title"][:40] if q["title"] else f"Вопрос {i}"
+            options.append(discord.SelectOption(
+                label=f"❌ Удалить #{i}: {title_short}",
+                description="Вопрос будет удалён безвозвратно",
+                value=f"del_{i}",
+            ))
+
+        # Переместить вверх/вниз
+        for i, q in enumerate(questions, 1):
+            if i > 1:
+                options.append(discord.SelectOption(
+                    label=f"⬆ Вверх #{i}",
+                    description=f"Поднять вопрос №{i} на позицию {i-1}",
+                    value=f"up_{i}",
+                ))
+            if i < len(questions):
+                options.append(discord.SelectOption(
+                    label=f"⬇ Вниз #{i}",
+                    description=f"Опустить вопрос №{i} на позицию {i+1}",
+                    value=f"down_{i}",
+                ))
+
+        # Назад
+        options.append(discord.SelectOption(
+            label="↩ Назад в главное меню",
+            description="Вернуться к дашборду редактора",
+            value="back",
+        ))
+
+        # Discord лимит — 25 опций в select. Если больше — берём первые 25
+        if len(options) > 25:
+            options = options[:25]
+
+        select = ui.Select(
+            placeholder="⚡ Выберите вопрос или действие...",
+            min_values=1, max_values=1,
+            options=options,
+        )
+        select.callback = self.on_select
+        self.add_item(select)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+    async def on_select(self, interaction: discord.Interaction):
+        value = interaction.data["values"][0]
+
+        if value == "back":
+            try:
+                await interaction.response.edit_message(
+                    embed=_dashboard_embed(self.config),
+                    view=None,
+                )
+            except discord.HTTPException:
+                pass
+            return
+
+        if value == "add":
+            # Открываем модалку для нового вопроса
+            key = "questions_clan" if self.ticket_type == "clan" else "questions_mod"
+            questions = _normalize_questions(self.config.get(key, []))
+            if len(questions) >= 15:
+                await interaction.response.send_message(
+                    embed=build_error(description="Достигнут лимит — 15 вопросов максимум."),
+                    ephemeral=True,
+                )
+                return
+            modal = EditSingleQuestionModal(
+                self.config, self.ticket_type, len(questions) + 1,
+                None, self,
             )
-            self._inputs.append(inp)
-            self.add_item(inp)
+            await interaction.response.send_modal(modal)
+            return
+
+        if value.startswith("edit_"):
+            idx = int(value.split("_")[1]) - 1
+            key = "questions_clan" if self.ticket_type == "clan" else "questions_mod"
+            questions = _normalize_questions(self.config.get(key, []))
+            if 0 <= idx < len(questions):
+                modal = EditSingleQuestionModal(
+                    self.config, self.ticket_type, idx + 1,
+                    questions[idx], self,
+                )
+                await interaction.response.send_modal(modal)
+            return
+
+        if value.startswith("del_"):
+            idx = int(value.split("_")[1]) - 1
+            key = "questions_clan" if self.ticket_type == "clan" else "questions_mod"
+            questions = _normalize_questions(self.config.get(key, []))
+            if 0 <= idx < len(questions):
+                removed = questions.pop(idx)
+                self.config[key] = questions
+                if _save_config(self.config):
+                    await interaction.response.send_message(
+                        embed=build_success(
+                            title="✅ Вопрос удалён",
+                            description=f"Удалён: **{removed['title']}**",
+                        ),
+                        ephemeral=True,
+                    )
+                    # Обновляем список
+                    try:
+                        await self.message.edit(
+                            embed=_build_questions_editor_embed(self.config, self.ticket_type),
+                            view=QuestionsEditorView(self.config, self.ticket_type, self.parent_view),
+                        )
+                    except (discord.HTTPException, AttributeError):
+                        pass
+                else:
+                    await interaction.response.send_message(
+                        embed=build_error(description="Не удалось сохранить."),
+                        ephemeral=True,
+                    )
+            return
+
+        if value.startswith("up_") or value.startswith("down_"):
+            idx = int(value.split("_")[1]) - 1
+            direction = 1 if value.startswith("down_") else -1
+            new_idx = idx + direction
+            key = "questions_clan" if self.ticket_type == "clan" else "questions_mod"
+            questions = _normalize_questions(self.config.get(key, []))
+            if 0 <= idx < len(questions) and 0 <= new_idx < len(questions):
+                questions[idx], questions[new_idx] = questions[new_idx], questions[idx]
+                self.config[key] = questions
+                if _save_config(self.config):
+                    await interaction.response.send_message(
+                        embed=build_success(
+                            title="✅ Вопрос перемещён",
+                            description=f"Перемещён с позиции {idx+1} на {new_idx+1}",
+                        ),
+                        ephemeral=True,
+                    )
+                    try:
+                        await self.message.edit(
+                            embed=_build_questions_editor_embed(self.config, self.ticket_type),
+                            view=QuestionsEditorView(self.config, self.ticket_type, self.parent_view),
+                        )
+                    except (discord.HTTPException, AttributeError):
+                        pass
+                else:
+                    await interaction.response.send_message(
+                        embed=build_error(description="Не удалось сохранить."),
+                        ephemeral=True,
+                    )
+            return
+
+
+class EditSingleQuestionModal(ui.Modal):
+    """Редактирование одного вопроса со всеми полями."""
+
+    def __init__(self, config: dict, ticket_type: str, question_num: int,
+                 existing: Optional[dict], parent_view: QuestionsEditorView):
+        is_clan = ticket_type == "clan"
+        type_emoji = "🛡️" if is_clan else "👑"
+        if existing:
+            title = f"{type_emoji} Вопрос #{question_num} (изм.)"
+        else:
+            title = f"{type_emoji} Новый вопрос #{question_num}"
+        super().__init__(title=title[:45])
+
+        self.config = config
+        self.ticket_type = ticket_type
+        self.question_num = question_num
+        self.existing = existing
+        self.parent_view = parent_view
+
+        # Поля формы
+        self.title_input = ui.TextInput(
+            label="Название вопроса",
+            placeholder="Например: Сколько вам лет",
+            default=existing["title"] if existing else "",
+            required=True,
+            max_length=45,
+            style=discord.TextStyle.short,
+        )
+        self.add_item(self.title_input)
+
+        self.subtitle_input = ui.TextInput(
+            label="Подвопросник (placeholder)",
+            placeholder="Например: Напишите свой возраст",
+            default=existing.get("subtitle", "") if existing else "",
+            required=False,
+            max_length=100,
+            style=discord.TextStyle.short,
+        )
+        self.add_item(self.subtitle_input)
+
+        self.max_length_input = ui.TextInput(
+            label="Макс. символов в ответе (1-4000)",
+            placeholder="2",
+            default=str(existing.get("max_length", 500)) if existing else "500",
+            required=True,
+            max_length=4,
+            style=discord.TextStyle.short,
+        )
+        self.add_item(self.max_length_input)
+
+        self.min_length_input = ui.TextInput(
+            label="Мин. символов (0 = без минимума)",
+            placeholder="1",
+            default=str(existing.get("min_length", 1)) if existing else "1",
+            required=False,
+            max_length=4,
+            style=discord.TextStyle.short,
+        )
+        self.add_item(self.min_length_input)
+
+        self.flags_input = ui.TextInput(
+            label="Флаги (через запятую): multiline, required, real_name, steam",
+            placeholder="Например: required, multiline",
+            default=self._flags_to_str(existing) if existing else "required",
+            required=True,
+            max_length=80,
+            style=discord.TextStyle.short,
+        )
+        self.add_item(self.flags_input)
+
+    @staticmethod
+    def _flags_to_str(q: dict) -> str:
+        flags = []
+        if q.get("multiline"):
+            flags.append("multiline")
+        if q.get("required"):
+            flags.append("required")
+        if q.get("is_real_name"):
+            flags.append("real_name")
+        if q.get("is_steam"):
+            flags.append("steam")
+        return ", ".join(flags) if flags else ""
 
     async def on_submit(self, interaction: discord.Interaction):
-        new_q = [inp.value.strip() for inp in self._inputs
-                 if inp.value and inp.value.strip()]
+        # Парсим значения
+        title = self.title_input.value.strip()
+        if not title:
+            await interaction.response.send_message(
+                embed=build_error(description="Название вопроса не может быть пустым."),
+                ephemeral=True,
+            )
+            return
+
+        subtitle = self.subtitle_input.value.strip()
+
+        try:
+            max_length = max(1, min(int(self.max_length_input.value.strip()), 4000))
+        except ValueError:
+            await interaction.response.send_message(
+                embed=build_error(description="Макс. символов должно быть числом от 1 до 4000."),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            min_length = max(0, int(self.min_length_input.value.strip() or "0"))
+        except ValueError:
+            min_length = 0
+
+        if min_length > max_length:
+            await interaction.response.send_message(
+                embed=build_error(description="Мин. символов не может быть больше макс."),
+                ephemeral=True,
+            )
+            return
+
+        # Парсим флаги
+        flags_str = self.flags_input.value.lower()
+        flags = {f.strip() for f in flags_str.split(",") if f.strip()}
+        multiline = "multiline" in flags
+        required = "required" in flags or not flags
+        is_real_name = "real_name" in flags or "имя" in flags or "name" in flags
+        is_steam = "steam" in flags or "стим" in flags
+
+        new_question = {
+            "title": title,
+            "subtitle": subtitle,
+            "max_length": max_length,
+            "min_length": min_length,
+            "multiline": multiline,
+            "required": required,
+            "is_real_name": is_real_name,
+            "is_steam": is_steam,
+        }
+
+        # Сохраняем в config
         key = "questions_clan" if self.ticket_type == "clan" else "questions_mod"
-        self.config[key] = new_q
+        questions = _normalize_questions(self.config.get(key, []))
+
+        if self.existing:
+            # Редактируем существующий
+            idx = self.question_num - 1
+            if 0 <= idx < len(questions):
+                questions[idx] = new_question
+            else:
+                questions.append(new_question)
+        else:
+            # Добавляем новый
+            if len(questions) >= 15:
+                await interaction.response.send_message(
+                    embed=build_error(description="Достигнут лимит — 15 вопросов максимум."),
+                    ephemeral=True,
+                )
+                return
+            questions.append(new_question)
+
+        self.config[key] = questions
         if not _save_config(self.config):
             await interaction.response.send_message(
                 embed=build_error(description="Не удалось сохранить config.json"),
@@ -137,28 +852,50 @@ class EditQuestionsModal(ui.Modal):
             )
             return
 
-        type_label = "Клан 🛡️" if self.ticket_type == "clan" else "Модерация 👑"
-        preview = "\n".join(f"**{i + 1}.** {q}" for i, q in enumerate(new_q)) or "—"
+        # Подтверждение
+        flags_display = []
+        if multiline:
+            flags_display.append("📝 многостр.")
+        if required:
+            flags_display.append("✅ обяз.")
+        else:
+            flags_display.append("⭕ необяз.")
+        if is_real_name:
+            flags_display.append("👤 имя")
+        if is_steam:
+            flags_display.append("🎮 steam")
+
         await interaction.response.send_message(
             embed=build_success(
-                title=f"✅ Вопросы обновлены — {type_label}",
-                description=f"Количество вопросов: **{len(new_q)}**",
-                fields=[("Новые вопросы", preview, False)],
-                footer_text="EGODiscord System • Editor",
+                title=f"✅ Вопрос #{self.question_num} сохранён",
+                description=(
+                    f"**Название:** {title}\n"
+                    f"**Подсказка:** {subtitle or '—'}\n"
+                    f"**Длина:** {min_length}-{max_length} симв.\n"
+                    f"**Флаги:** {' • '.join(flags_display)}"
+                ),
             ),
             ephemeral=True,
         )
-        # Обновляем дашборд
+
+        # Обновляем список
         try:
-            await self.parent_view.message.edit(embed=_dashboard_embed(self.config))
+            await self.parent_view.message.edit(
+                embed=_build_questions_editor_embed(self.config, self.ticket_type),
+                view=QuestionsEditorView(self.config, self.ticket_type,
+                                         self.parent_view.parent_view),
+            )
         except (discord.HTTPException, AttributeError):
             pass
 
 
-class EditPanelTextModal(ui.Modal):
-    """Редактирование текста панели тикетов."""
+# ============================================================================
+# Остальные модалки (текст панели, Steam, роли, каналы, цвет, приветствие,
+# брендинг, пинг-роли) — без изменений
+# ============================================================================
 
-    def __init__(self, config: dict, parent_view: "EditorDashboardView"):
+class EditPanelTextModal(ui.Modal):
+    def __init__(self, config: dict, parent_view: EditorDashboardView):
         super().__init__(title="📝 Текст панели тикетов")
         self.config = config
         self.parent_view = parent_view
@@ -187,12 +924,10 @@ class EditPanelTextModal(ui.Modal):
                 ephemeral=True,
             )
             return
-
         await interaction.response.send_message(
             embed=build_success(
                 title="✅ Текст панели обновлён",
                 description=f"Новый текст:\n\n{_truncate(new_text, 1500)}",
-                footer_text="EGODiscord System • Editor",
             ),
             ephemeral=True,
         )
@@ -203,14 +938,11 @@ class EditPanelTextModal(ui.Modal):
 
 
 class EditSteamKeyModal(ui.Modal):
-    """Редактирование Steam API ключа."""
-
-    def __init__(self, config: dict, parent_view: "EditorDashboardView"):
+    def __init__(self, config: dict, parent_view: EditorDashboardView):
         super().__init__(title="🔑 Steam API ключ")
         self.config = config
         self.parent_view = parent_view
         current = config.get("steam_api_key", "")
-        masked = current[:6] + "…" + current[-4:] if len(current) > 10 else "—"
         self.key_input = ui.TextInput(
             label="Новый Steam API ключ",
             placeholder="Например: 7B429F2A48B86FA526DF37DA357C7A55",
@@ -238,15 +970,11 @@ class EditSteamKeyModal(ui.Modal):
                 ephemeral=True,
             )
             return
-
         masked = new_key[:6] + "…" + new_key[-4:]
         await interaction.response.send_message(
             embed=build_success(
                 title="✅ Steam API ключ обновлён",
-                description=f"Новый ключ: `{masked}`\n\n"
-                            f"Проверка аккаунтов теперь будет идти через Steam Web API "
-                            f"(VAC-баны, часы в Rust, и т.п.).",
-                footer_text="EGODiscord System • Editor",
+                description=f"Новый ключ: `{masked}`",
             ),
             ephemeral=True,
         )
@@ -257,44 +985,30 @@ class EditSteamKeyModal(ui.Modal):
 
 
 class EditChannelIdsModal(ui.Modal):
-    """Редактирование ID каналов/категорий."""
-
-    def __init__(self, config: dict, parent_view: "EditorDashboardView"):
+    def __init__(self, config: dict, parent_view: EditorDashboardView):
         super().__init__(title="📁 Каналы и категории")
         self.config = config
         self.parent_view = parent_view
 
         self.cat_clan = ui.TextInput(
             label="ID категории — Клан",
-            placeholder="1533566111684235504",
             default=str(config.get("category_clan_id", "")),
-            required=True,
-            max_length=20,
-            style=discord.TextStyle.short,
+            required=True, max_length=20, style=discord.TextStyle.short,
         )
         self.cat_mod = ui.TextInput(
             label="ID категории — Модерация",
-            placeholder="1533566150015848588",
             default=str(config.get("category_mod_id", "")),
-            required=True,
-            max_length=20,
-            style=discord.TextStyle.short,
+            required=True, max_length=20, style=discord.TextStyle.short,
         )
         self.log_ch = ui.TextInput(
             label="ID канала логов",
-            placeholder="1533068805771628637",
             default=str(config.get("log_channel_id", "")),
-            required=True,
-            max_length=20,
-            style=discord.TextStyle.short,
+            required=True, max_length=20, style=discord.TextStyle.short,
         )
         self.accept_role = ui.TextInput(
             label="ID роли при принятии (EGO)",
-            placeholder="1533070154349674526",
             default=str(config.get("accept_role_id", "")),
-            required=True,
-            max_length=20,
-            style=discord.TextStyle.short,
+            required=True, max_length=20, style=discord.TextStyle.short,
         )
         for inp in (self.cat_clan, self.cat_mod, self.log_ch, self.accept_role):
             self.add_item(inp)
@@ -307,11 +1021,7 @@ class EditChannelIdsModal(ui.Modal):
             self.config["accept_role_id"] = int(self.accept_role.value.strip())
         except ValueError:
             await interaction.response.send_message(
-                embed=build_error(
-                    description="Все ID должны быть числами. Скопируйте ID через "
-                                "Правый клик по каналу/роли → Копировать ID "
-                                "(нужна включённая «Разработка» в Discord)."
-                ),
+                embed=build_error(description="Все ID должны быть числами."),
                 ephemeral=True,
             )
             return
@@ -321,12 +1031,10 @@ class EditChannelIdsModal(ui.Modal):
                 ephemeral=True,
             )
             return
-
         await interaction.response.send_message(
             embed=build_success(
                 title="✅ Каналы и роли обновлены",
                 description="Новые ID применены мгновенно.",
-                footer_text="EGODiscord System • Editor",
             ),
             ephemeral=True,
         )
@@ -337,16 +1045,13 @@ class EditChannelIdsModal(ui.Modal):
 
 
 class EditRolesModal(ui.Modal):
-    """Редактирование ролей персонала (leader, co_leader, ...)."""
-
-    def __init__(self, config: dict, parent_view: "EditorDashboardView"):
+    def __init__(self, config: dict, parent_view: EditorDashboardView):
         super().__init__(title="👑 Роли персонала EGO")
         self.config = config
         self.parent_view = parent_view
         roles_cfg = config.get("roles", {})
 
         self.inputs: dict[str, ui.TextInput] = {}
-        # Только 5 самых важных (модалка вмещает 5)
         labels = {
             "leader": "ID роли — Лидер",
             "co_leader": "ID роли — Со-лидер",
@@ -359,9 +1064,7 @@ class EditRolesModal(ui.Modal):
                 label=label,
                 placeholder="0 — роль не задана",
                 default=str(roles_cfg.get(key, 0)),
-                required=False,
-                max_length=20,
-                style=discord.TextStyle.short,
+                required=False, max_length=20, style=discord.TextStyle.short,
             )
             self.inputs[key] = inp
             self.add_item(inp)
@@ -387,7 +1090,6 @@ class EditRolesModal(ui.Modal):
             embed=build_success(
                 title="✅ Роли персонала обновлены",
                 description="Новые роли применены мгновенно.",
-                footer_text="EGODiscord System • Editor",
             ),
             ephemeral=True,
         )
@@ -398,31 +1100,22 @@ class EditRolesModal(ui.Modal):
 
 
 class EditPingRolesModal(ui.Modal):
-    """Редактирование ролей для пинга (clan/mod)."""
-
-    def __init__(self, config: dict, parent_view: "EditorDashboardView"):
+    def __init__(self, config: dict, parent_view: EditorDashboardView):
         super().__init__(title="🔔 Роли для пинга при создании тикета")
         self.config = config
         self.parent_view = parent_view
-
         clan_ping = config.get("ping_roles_clan", [])
         mod_ping = config.get("ping_roles_mod", [])
 
         self.clan_input = ui.TextInput(
             label="Пинг при тикете Клан (через запятую)",
-            placeholder="1533067469894189167, 1533560996772188211",
             default=", ".join(str(r) for r in clan_ping) if clan_ping else "",
-            required=False,
-            max_length=200,
-            style=discord.TextStyle.short,
+            required=False, max_length=200, style=discord.TextStyle.short,
         )
         self.mod_input = ui.TextInput(
             label="Пинг при тикете Модерация (через запятую)",
-            placeholder="1533067469894189167",
             default=", ".join(str(r) for r in mod_ping) if mod_ping else "",
-            required=False,
-            max_length=200,
-            style=discord.TextStyle.short,
+            required=False, max_length=200, style=discord.TextStyle.short,
         )
         self.add_item(self.clan_input)
         self.add_item(self.mod_input)
@@ -448,7 +1141,6 @@ class EditPingRolesModal(ui.Modal):
                 ephemeral=True,
             )
             return
-
         await interaction.response.send_message(
             embed=build_success(
                 title="✅ Роли для пинга обновлены",
@@ -456,7 +1148,6 @@ class EditPingRolesModal(ui.Modal):
                     f"**Клан:** {len(self.config['ping_roles_clan'])} ролей\n"
                     f"**Модерация:** {len(self.config['ping_roles_mod'])} ролей"
                 ),
-                footer_text="EGODiscord System • Editor",
             ),
             ephemeral=True,
         )
@@ -466,13 +1157,7 @@ class EditPingRolesModal(ui.Modal):
             pass
 
 
-# ============================================================================
-# НОВЫЕ РАСШИРЕННЫЕ ФУНКЦИИ РЕДАКТОРА (premium)
-# ============================================================================
-
 class EditEmbedColorModal(ui.Modal):
-    """Изменение цвета embed-сообщений бота (HEX)."""
-
     PRESET_COLORS = {
         "ego": ("EGO Фиолетовый", 0x5865F2),
         "red": ("EGO Красный", 0xED4245),
@@ -484,31 +1169,25 @@ class EditEmbedColorModal(ui.Modal):
         "dark": ("Тёмный", 0x2C2F33),
     }
 
-    def __init__(self, config: dict, parent_view: "EditorDashboardView"):
+    def __init__(self, config: dict, parent_view: EditorDashboardView):
         super().__init__(title="🎨 Цвет embed-сообщений")
         self.config = config
         self.parent_view = parent_view
         current = config.get("embed_color", "5865F2")
-
         self.color_input = ui.TextInput(
             label="HEX цвет (без #) или ключевое слово",
             placeholder="5865F2 или ego / red / green / gold / pink",
             default=current,
-            required=True,
-            max_length=20,
-            style=discord.TextStyle.short,
+            required=True, max_length=20, style=discord.TextStyle.short,
         )
         self.add_item(self.color_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         value = self.color_input.value.strip().lower().lstrip("#")
-
-        # Проверяем ключевые слова
         if value in self.PRESET_COLORS:
             name, color_int = self.PRESET_COLORS[value]
             hex_str = f"{color_int:06X}"
         else:
-            # Пробуем как HEX
             try:
                 color_int = int(value, 16)
                 if color_int < 0 or color_int > 0xFFFFFF:
@@ -519,10 +1198,8 @@ class EditEmbedColorModal(ui.Modal):
                 await interaction.response.send_message(
                     embed=build_error(
                         description=(
-                            "Неверный формат цвета. Используйте:\n"
-                            "• HEX без `#`: `5865F2`\n"
-                            "• Ключевое слово: `ego`, `red`, `green`, `gold`, "
-                            "`orange`, `pink`, `cyan`, `dark`"
+                            "Неверный формат. Используйте HEX без `#` (например `5865F2`) "
+                            "или ключевое слово: ego, red, green, gold, orange, pink, cyan, dark"
                         ),
                     ),
                     ephemeral=True,
@@ -537,30 +1214,18 @@ class EditEmbedColorModal(ui.Modal):
             )
             return
 
-        # Динамически берём цвет для подтверждения
-        from utils import embeds as embeds_mod
-        old_color_main = embeds_mod.COLOR_MAIN
-        embeds_mod.COLOR_MAIN = color_int
-
         preview_embed = discord.Embed(
             title="🎨 Цвет обновлён",
             description=(
                 f"**Название:** {name}\n"
                 f"**HEX:** `#{hex_str}`\n"
-                f"**RGB:** `({(color_int >> 16) & 0xFF}, {(color_int >> 8) & 0xFF}, {color_int & 0xFF})`\n\n"
-                f"Цвет применён к этому сообщению — все будущие embed'ы бота "
-                f"будут использовать его. Стандартные цвета success/error/warning "
-                f"остаются без изменений."
+                f"**RGB:** `({(color_int >> 16) & 0xFF}, {(color_int >> 8) & 0xFF}, {color_int & 0xFF})`"
             ),
             color=color_int,
-            timestamp=embeds_mod.now_msk(),
+            timestamp=embeds.now_msk(),
         )
         preview_embed.set_footer(text="EGODiscord System • Editor")
         await interaction.response.send_message(embed=preview_embed, ephemeral=True)
-
-        # Возвращаем old_color_main обратно —COLOR_MAIN не должен меняться глобально
-        # (для будущего отображения других embed'ов). На самом деле мы хотим, чтобы
-        # он изменился — оставляем.
         try:
             await self.parent_view.message.edit(embed=_dashboard_embed(self.config))
         except (discord.HTTPException, AttributeError):
@@ -568,24 +1233,16 @@ class EditEmbedColorModal(ui.Modal):
 
 
 class EditWelcomeMessageModal(ui.Modal):
-    """Редактирование приветственного сообщения в тикете."""
-
-    def __init__(self, config: dict, parent_view: "EditorDashboardView"):
+    def __init__(self, config: dict, parent_view: EditorDashboardView):
         super().__init__(title="👋 Приветствие в тикете")
         self.config = config
         self.parent_view = parent_view
         current = config.get("ticket_welcome_text", "")
-
         self.text_input = ui.TextInput(
             label="Текст приветствия (поддерживает Markdown)",
-            placeholder=(
-                "Привет, {user}! Твой тикет принят. Ожидай рекрутёра.\n"
-                "Доступные плейсхолдеры: {user}, {type}"
-            ),
+            placeholder="Привет, {user}! Твой тикет принят. Ожидай рекрутёра.",
             default=current,
-            required=False,
-            max_length=1500,
-            style=discord.TextStyle.paragraph,
+            required=False, max_length=1500, style=discord.TextStyle.paragraph,
         )
         self.add_item(self.text_input)
 
@@ -595,20 +1252,16 @@ class EditWelcomeMessageModal(ui.Modal):
             self.config["ticket_welcome_text"] = new_text
         else:
             self.config.pop("ticket_welcome_text", None)
-
         if not _save_config(self.config):
             await interaction.response.send_message(
                 embed=build_error(description="Не удалось сохранить config.json"),
                 ephemeral=True,
             )
             return
-
-        preview = new_text if new_text else "_(используется текст по умолчанию)_"
         await interaction.response.send_message(
             embed=build_success(
                 title="✅ Приветствие обновлено",
-                description=f"Превью:\n\n> {_truncate(preview, 800)}",
-                footer_text="EGODiscord System • Editor",
+                description=f"Превью:\n\n> {_truncate(new_text or '_(по умолчанию)_', 800)}",
             ),
             ephemeral=True,
         )
@@ -619,21 +1272,16 @@ class EditWelcomeMessageModal(ui.Modal):
 
 
 class EditBrandingModal(ui.Modal):
-    """Редактирование URL логотипа/иконки бота (для embed'ов)."""
-
-    def __init__(self, config: dict, parent_view: "EditorDashboardView"):
+    def __init__(self, config: dict, parent_view: EditorDashboardView):
         super().__init__(title="🖼️ Брендинг (иконка)")
         self.config = config
         self.parent_view = parent_view
         current = config.get("brand_thumbnail_url", "")
-
         self.url_input = ui.TextInput(
             label="URL иконки (для embed'ов)",
-            placeholder="https://cdn.discordapp.com/... или оставьте пустым",
+            placeholder="https://cdn.discordapp.com/...",
             default=current,
-            required=False,
-            max_length=500,
-            style=discord.TextStyle.short,
+            required=False, max_length=500, style=discord.TextStyle.short,
         )
         self.add_item(self.url_input)
 
@@ -641,30 +1289,23 @@ class EditBrandingModal(ui.Modal):
         url = self.url_input.value.strip()
         if url and not url.startswith(("http://", "https://")):
             await interaction.response.send_message(
-                embed=build_error(description="URL должен начинаться с `http://` или `https://`"),
+                embed=build_error(description="URL должен начинаться с http:// или https://"),
                 ephemeral=True,
             )
             return
-
         if url:
             self.config["brand_thumbnail_url"] = url
         else:
             self.config.pop("brand_thumbnail_url", None)
-
         if not _save_config(self.config):
             await interaction.response.send_message(
                 embed=build_error(description="Не удалось сохранить config.json"),
                 ephemeral=True,
             )
             return
-
         embed = build_success(
             title="✅ Брендинг обновлён",
-            description=(
-                f"Новая иконка:\n{url or '_(используется аватар бота)_'}\n\n"
-                f"Иконка будет применяться ко всем новым embed'ам бота."
-            ),
-            footer_text="EGODiscord System • Editor",
+            description=f"Новая иконка:\n{url or '_(используется аватар бота)_'}",
         )
         if url:
             embed.set_thumbnail(url=url)
@@ -676,16 +1317,13 @@ class EditBrandingModal(ui.Modal):
 
 
 class ConfirmResetView(ui.View):
-    """Подтверждение сброса настроек."""
-
-    def __init__(self, parent_view: "EditorDashboardView"):
+    def __init__(self, parent_view: EditorDashboardView):
         super().__init__(timeout=30)
         self.parent_view = parent_view
 
     @ui.button(label="Да, сбросить", emoji="⚠️",
                style=discord.ButtonStyle.danger, custom_id="ego_reset_confirm")
     async def confirm(self, interaction: discord.Interaction, button: ui.Button):
-        # Сбрасываем только «мягкие» настройки — не трогаем ID каналов/ролей
         soft_keys = [
             "questions_clan", "questions_mod", "ticket_panel_text",
             "ticket_welcome_text", "embed_color", "brand_thumbnail_url",
@@ -702,12 +1340,7 @@ class ConfirmResetView(ui.View):
         await interaction.response.edit_message(
             embed=build_success(
                 title="✅ Настройки сброшены",
-                description=(
-                    "Сброшены: вопросы, текст панели, приветствие, цвет, брендинг, "
-                    "пинг-роли.\n"
-                    "**Сохранены:** ID каналов/категорий, роли персонала, "
-                    "Steam API ключ, developer_id."
-                ),
+                description="Сброшены: вопросы, текст, приветствие, цвет, брендинг, пинг-роли.",
             ),
             view=None,
         )
@@ -728,262 +1361,11 @@ class ConfirmResetView(ui.View):
 
 
 # ============================================================================
-# Дашборд (главное меню редактора)
-# ============================================================================
-
-def _dashboard_embed(config: dict) -> discord.Embed:
-    """Собирает embed-превью текущих настроек бота (premium дизайн)."""
-    questions_clan = config.get("questions_clan", [])
-    questions_mod = config.get("questions_mod", [])
-    steam_key = config.get("steam_api_key", "")
-    masked_key = (steam_key[:6] + "…" + steam_key[-4:]) if len(steam_key) > 10 else "—"
-    roles_cfg = config.get("roles", {})
-
-    # Цвет embed'ов
-    embed_color_str = config.get("embed_color", "5865F2")
-    try:
-        embed_color_int = int(embed_color_str, 16)
-    except (ValueError, TypeError):
-        embed_color_int = 0x5865F2
-        embed_color_str = "5865F2"
-
-    welcome_text = config.get("ticket_welcome_text", "")
-    branding_url = config.get("brand_thumbnail_url", "")
-
-    embed = discord.Embed(
-        title="🛠️ Редактор бота EGO",
-        description=(
-            f"## ⚙️ Текущие настройки\n\n"
-            f"Все изменения применяются **мгновенно** — без перезапуска бота.\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"### 📋 Анкеты\n"
-            f"🛡️ **Вопросы (Клан):** {len(questions_clan)} шт.\n"
-            f"👑 **Вопросы (Модерация):** {len(questions_mod)} шт.\n\n"
-            f"### 🎨 Дизайн\n"
-            f"📝 **Текст панели:** {_truncate(config.get('ticket_panel_text', ''), 50)}\n"
-            f"👋 **Приветствие:** {_truncate(welcome_text or '_(по умолчанию)_', 50)}\n"
-            f"🎨 **Цвет embed:** `#{embed_color_str}`\n"
-            f"🖼️ **Брендинг:** {'✅ задан' if branding_url else '_(по умолчанию)_'}\n\n"
-            f"### 🔑 Ключи и роли\n"
-            f"🔑 **Steam API:** `{masked_key}`\n"
-            f"🔔 **Пинг ролей (Клан/Модер):** "
-            f"{len(config.get('ping_roles_clan', []))} / "
-            f"{len(config.get('ping_roles_mod', []))}\n"
-            f"👑 **Ролей персонала:** {len([k for k, v in roles_cfg.items() if v])} / 7\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"👇 Нажмите кнопку ниже, чтобы открыть нужный раздел"
-        ),
-        color=embed_color_int,
-        timestamp=embeds.now_msk(),
-    )
-    embed.set_footer(text="EGODiscord System • Editor Dashboard")
-    if branding_url:
-        embed.set_thumbnail(url=branding_url)
-    return embed
-
-
-class EditorDashboardView(ui.View):
-    """Главная панель редактора с кнопками по разделам."""
-
-    def __init__(self, config: dict, owner_id: int):
-        super().__init__(timeout=300)  # 5 минут — потом кнопки отключаются
-        self.config = config
-        self.owner_id = owner_id
-        self.message: Optional[discord.Message] = None
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # Только тот, кто открыл дашборд, может им управлять
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message(
-                embed=build_error(
-                    description="Этот дашборд открыл другой администратор. "
-                                "Используйте `.editor`, чтобы открыть свой."
-                ),
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    async def on_timeout(self):
-        """Через 5 минут отключаем все кнопки."""
-        for item in self.children:
-            item.disabled = True
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except discord.HTTPException:
-                pass
-
-    # --- Кнопки разделов ---
-
-    @ui.button(label="Вопросы — Клан", emoji="🛡️",
-               style=discord.ButtonStyle.primary, custom_id="ego_edit_q_clan")
-    async def btn_q_clan(self, interaction: discord.Interaction, button: ui.Button):
-        modal = EditQuestionsModal(self.config, "clan", self)
-        await interaction.response.send_modal(modal)
-
-    @ui.button(label="Вопросы — Модерация", emoji="👑",
-               style=discord.ButtonStyle.primary, custom_id="ego_edit_q_mod")
-    async def btn_q_mod(self, interaction: discord.Interaction, button: ui.Button):
-        modal = EditQuestionsModal(self.config, "mod", self)
-        await interaction.response.send_modal(modal)
-
-    @ui.button(label="Текст панели", emoji="📝",
-               style=discord.ButtonStyle.secondary, custom_id="ego_edit_panel")
-    async def btn_panel(self, interaction: discord.Interaction, button: ui.Button):
-        modal = EditPanelTextModal(self.config, self)
-        await interaction.response.send_modal(modal)
-
-    @ui.button(label="Steam API ключ", emoji="🔑",
-               style=discord.ButtonStyle.secondary, custom_id="ego_edit_steam")
-    async def btn_steam(self, interaction: discord.Interaction, button: ui.Button):
-        modal = EditSteamKeyModal(self.config, self)
-        await interaction.response.send_modal(modal)
-
-    @ui.button(label="Пинг-роли", emoji="🔔",
-               style=discord.ButtonStyle.secondary, custom_id="ego_edit_ping")
-    async def btn_ping(self, interaction: discord.Interaction, button: ui.Button):
-        modal = EditPingRolesModal(self.config, self)
-        await interaction.response.send_modal(modal)
-
-    @ui.button(label="Роли персонала", emoji="👑",
-               style=discord.ButtonStyle.secondary, custom_id="ego_edit_roles")
-    async def btn_roles(self, interaction: discord.Interaction, button: ui.Button):
-        modal = EditRolesModal(self.config, self)
-        await interaction.response.send_modal(modal)
-
-    @ui.button(label="Каналы и категории", emoji="📁",
-               style=discord.ButtonStyle.secondary, custom_id="ego_edit_channels")
-    async def btn_channels(self, interaction: discord.Interaction, button: ui.Button):
-        modal = EditChannelIdsModal(self.config, self)
-        await interaction.response.send_modal(modal)
-
-    # --- Premium кнопки (новые) ---
-
-    @ui.button(label="Цвет embed", emoji="🎨",
-               style=discord.ButtonStyle.secondary, custom_id="ego_edit_color")
-    async def btn_color(self, interaction: discord.Interaction, button: ui.Button):
-        modal = EditEmbedColorModal(self.config, self)
-        await interaction.response.send_modal(modal)
-
-    @ui.button(label="Приветствие", emoji="👋",
-               style=discord.ButtonStyle.secondary, custom_id="ego_edit_welcome")
-    async def btn_welcome(self, interaction: discord.Interaction, button: ui.Button):
-        modal = EditWelcomeMessageModal(self.config, self)
-        await interaction.response.send_modal(modal)
-
-    @ui.button(label="Брендинг", emoji="🖼️",
-               style=discord.ButtonStyle.secondary, custom_id="ego_edit_branding")
-    async def btn_branding(self, interaction: discord.Interaction, button: ui.Button):
-        modal = EditBrandingModal(self.config, self)
-        await interaction.response.send_modal(modal)
-
-    @ui.button(label="👁 Превью панели", emoji="👁",
-               style=discord.ButtonStyle.primary, custom_id="ego_edit_preview")
-    async def btn_preview(self, interaction: discord.Interaction, button: ui.Button):
-        """Показывает превью панели тикетов с текущими настройками."""
-        from cogs.tickets import _build_panel_embed  # type: ignore
-        embed = _build_panel_embed(self.config)
-        await interaction.response.send_message(
-            embed=embed,
-            ephemeral=True,
-        )
-
-    @ui.button(label="🔁 Пересоздать панель", emoji="♻️",
-               style=discord.ButtonStyle.success, custom_id="ego_edit_recreate_panel")
-    async def btn_recreate(self, interaction: discord.Interaction, button: ui.Button):
-        """Пересоздаёт панель тикетов в текущем канале (со старым сообщением — удаляет)."""
-        await interaction.response.defer(ephemeral=True)
-        # Найти и удалить старое сообщение панели в этом канале
-        channel = interaction.channel
-        old_panel = None
-        try:
-            async for msg in channel.history(limit=50, oldest_first=False):
-                if msg.author == interaction.guild.me and msg.components:
-                    for row in msg.components:
-                        for comp in getattr(row, "children", []):
-                            if isinstance(comp, discord.SelectMenu) and \
-                                    comp.custom_id == "ego_ticket_panel_select":
-                                old_panel = msg
-                                break
-                        if old_panel:
-                            break
-                if old_panel:
-                    break
-        except discord.HTTPException:
-            pass
-
-        if old_panel:
-            try:
-                await old_panel.delete()
-            except discord.HTTPException:
-                pass
-
-        # Создаём новую панель
-        from cogs.tickets import TicketPanelView, _build_panel_embed  # type: ignore
-        embed = _build_panel_embed(self.config)
-        view = TicketPanelView(self.config)
-        try:
-            await channel.send(embed=embed, view=view)
-        except discord.HTTPException as e:
-            await interaction.followup.send(
-                embed=build_error(description=f"Не удалось создать панель: `{e}`"),
-                ephemeral=True,
-            )
-            return
-
-        await interaction.followup.send(
-            embed=build_success(
-                title="✅ Панель пересоздана",
-                description=f"Старая панель удалена, новая создана в {channel.mention}.",
-            ),
-            ephemeral=True,
-        )
-
-    @ui.button(label="⚠ Сбросить", emoji="⚠️",
-               style=discord.ButtonStyle.danger, custom_id="ego_edit_reset")
-    async def btn_reset(self, interaction: discord.Interaction, button: ui.Button):
-        """Сброс мягких настроек (вопросы, текст, цвет) — ID каналов и ролей сохраняет."""
-        confirm_view = ConfirmResetView(self)
-        await interaction.response.send_message(
-            embed=build_warning(
-                title="⚠️ Подтверждение сброса",
-                description=(
-                    "Будут сброшены:\n"
-                    "• Вопросы анкеты (клан и модерация)\n"
-                    "• Текст панели тикетов\n"
-                    "• Приветствие в тикете\n"
-                    "• Цвет embed'ов\n"
-                    "• Брендинг (иконка)\n"
-                    "• Пинг-роли\n\n"
-                    "**Сохранятся:**\n"
-                    "• ID каналов и категорий\n"
-                    "• Роли персонала\n"
-                    "• Steam API ключ\n"
-                    "• developer_id\n\n"
-                    "Подтвердите действие кнопкой ниже."
-                ),
-            ),
-            view=confirm_view,
-            ephemeral=True,
-        )
-
-    @ui.button(label="Закрыть редактор", emoji="✖️",
-               style=discord.ButtonStyle.danger, custom_id="ego_edit_close")
-    async def btn_close(self, interaction: discord.Interaction, button: ui.Button):
-        # Убираем view (кнопки)
-        try:
-            await interaction.response.edit_message(view=None)
-        except discord.HTTPException:
-            pass
-
-
-# ============================================================================
 # Cog
 # ============================================================================
 
 class Editor(commands.Cog):
-    """Интерактивный редактор настроек бота."""
+    """Интерактивный редактор настроек бота (dropdown-меню)."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -995,20 +1377,11 @@ class Editor(commands.Cog):
     @commands.guild_only()
     async def editor_cmd(self, ctx: commands.Context, section: Optional[str] = None):
         """
-        Открыть интерактивный дашборд настройки бота.
+        Открыть интерактивный дашборд настройки бота (через dropdown).
 
-        Дашборд показывает все текущие значения и позволяет изменить:
-        - Вопросы анкеты (клан/модерация)
-        - Текст панели тикетов
-        - Приветствие в тикете
-        - Steam API ключ
-        - Пинг-роли
-        - Роли персонала
-        - Каналы и категории
-        - Цвет embed-сообщений (8 пресетов + произвольный HEX)
-        - Брендинг (URL иконки)
-        - Превью панели тикетов
-        - Сброс мягких настроек
+        Использование:
+            .editor              — открыть главное меню
+            .editor questions    — сразу открыть редактор вопросов клана
         """
         config = self._config()
         if not _is_admin(ctx.author, config):
@@ -1019,7 +1392,6 @@ class Editor(commands.Cog):
         msg = await ctx.send(embed=_dashboard_embed(config), view=view)
         view.message = msg
 
-        # Удаляем сообщение с командой
         try:
             await ctx.message.delete()
         except discord.HTTPException:

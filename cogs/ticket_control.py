@@ -85,6 +85,113 @@ async def _set_channel_emoji(channel: discord.TextChannel, new_emoji: str):
 
 
 # ============================================================================
+# Единый embed управления тикетом (компактно — без спама embed'ами)
+# ============================================================================
+
+def build_control_embed(
+    user: discord.abc.User,
+    ticket_type: str,
+    status: str = "open",
+    claimer: Optional[discord.abc.User] = None,
+    voice_channel: Optional[discord.VoiceChannel] = None,
+    steam_status: str = "pending",
+) -> discord.Embed:
+    """Собирает единый embed управления тикетом.
+
+    Этот embed редактируется при claim/call/close — вместо отправки новых сообщений.
+    Так тикет остаётся чистым (одно закреплённое сообщение управления + анкета).
+
+    status: 'open' | 'claimed' | 'accepted' | 'rejected'
+    steam_status: 'pending' | 'checking' | 'done' | 'failed'
+    """
+    is_clan = ticket_type == "clan"
+    type_emoji = "🛡️" if is_clan else "👑"
+    type_label = "Набор в клан EGO" if is_clan else "Набор в модерацию EGO"
+
+    # Статусная строка
+    if status == "open":
+        status_text = "🟡 Ожидает рассмотрения"
+        status_color = COLOR_WARNING
+        title = f"{type_emoji} Тикет ожидает модератора"
+    elif status == "claimed":
+        status_text = "🟢 В работе"
+        status_color = COLOR_SUCCESS
+        title = f"{type_emoji} Тикет в работе"
+    elif status == "accepted":
+        status_text = "✅ Принят"
+        status_color = COLOR_SUCCESS
+        title = f"{type_emoji} Заявка принята"
+    elif status == "rejected":
+        status_text = "❌ Отклонён"
+        status_color = COLOR_ERROR
+        title = f"{type_emoji} Заявка отклонена"
+    else:
+        status_text = "—"
+        status_color = COLOR_MAIN
+        title = f"{type_emoji} Тикет"
+
+    description_parts = [
+        f"## 👋 {user.mention}",
+        f"",
+        f"**Тип заявки:** {type_emoji} {type_label}",
+        f"**Статус:** {status_text}",
+    ]
+
+    if claimer:
+        description_parts.append(f"**В работе:** {claimer.mention}")
+
+    if voice_channel:
+        description_parts.append(f"**Обзвон:** {voice_channel.mention}")
+    else:
+        description_parts.append("**Обзвон:** _не создан_")
+
+    # Steam статус
+    steam_emojis = {
+        "pending": "⏳ Ожидает",
+        "checking": "🔄 Проверка...",
+        "done": "✅ Готово",
+        "failed": "⚠️ Ошибка",
+    }
+    description_parts.append(f"**Steam:** {steam_emojis.get(steam_status, '—')}")
+
+    description_parts.extend([
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"### 👇 Управление",
+        f"Кнопки ниже — для модераторов.",
+    ])
+
+    if status == "open":
+        description_parts.append("🤝 **Взять в работу** — принять тикет на себя")
+        description_parts.append("🎙️ **Обзвон** — создать голосовой канал")
+        description_parts.append("🔒 **Закрыть** — принять/отклонить заявку")
+    elif status == "claimed":
+        description_parts.append("🎙️ **Обзвон** — создать голосовой канал")
+        description_parts.append("🔇 **Заглушить** — мут в голосовом")
+        description_parts.append("🔒 **Закрыть** — принять/отклонить заявку")
+
+    embed = discord.Embed(
+        title=title,
+        description="\n".join(description_parts),
+        color=status_color,
+        timestamp=now_msk(),
+    )
+    embed.add_field(
+        name="👤 Кандидат",
+        value=f"{user.mention}\n`{user.id}`",
+        inline=True,
+    )
+    embed.add_field(
+        name="📅 Создан",
+        value=msk_timestamp(),
+        inline=True,
+    )
+    embed.set_thumbnail(url=user.display_avatar.url)
+    embed.set_footer(text="EGODiscord System • Управление тикетом")
+    return embed
+
+
+# ============================================================================
 # Главная панель управления тикетом
 # ============================================================================
 
@@ -187,52 +294,27 @@ async def _handle_claim(interaction: discord.Interaction, config: dict,
     # Записываем claim в БД
     await database.ticket_set_claimed(interaction.channel.id, interaction.user.id)
 
-    # Перезаписываем сообщение с обновлённым view (Claim -> Claimed)
-    # Кнопка «Взять в работу» заменяется на индикатор «В работе: <модератор>»
+    # КОМПАКТНО: редактируем существующее embed управления (без отправки нового)
     new_view = TicketControlViewClaimed(config, interaction.user)
+    new_embed = build_control_embed(
+        user=candidate or interaction.user,
+        ticket_type=ticket["type"],
+        status="claimed",
+        claimer=interaction.user,
+        voice_channel=guild.get_channel(ticket.get("voice_channel_id") or 0)
+            if ticket.get("voice_channel_id") else None,
+        steam_status="done",  # Steam уже проверен к моменту claim
+    )
     try:
-        await interaction.response.edit_message(view=new_view)
+        await interaction.response.edit_message(embed=new_embed, view=new_view)
     except discord.HTTPException as e:
         log.warning("Не удалось обновить view после claim: %s", e)
         try:
             await interaction.followup.edit_message(
-                interaction.message.id, view=new_view
+                interaction.message.id, embed=new_embed, view=new_view
             )
         except discord.HTTPException:
             pass
-
-    # Пишем «Тикет взят в работу» — премиум-embed
-    claim_embed = discord.Embed(
-        title="🤝 Тикет взят в работу",
-        description=(
-            f"## ✅ Заявка принята\n\n"
-            f"Модератор **{interaction.user.mention}** взял тикет в работу.\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"### 📞 Следующий шаг — голосовой обзвон\n"
-            f"⏳ Пожалуйста, оставайтесь онлайн и следите за уведомлениями.\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        ),
-        color=COLOR_SUCCESS,
-        timestamp=now_msk(),
-    )
-    claim_embed.add_field(
-        name="👤 Модератор",
-        value=f"{interaction.user.mention}\n`{interaction.user.id}`",
-        inline=True,
-    )
-    claim_embed.add_field(
-        name="⏱️ Время",
-        value=msk_timestamp(),
-        inline=True,
-    )
-    claim_embed.add_field(
-        name="📊 Статус",
-        value="🟡 Ожидание голосового обзвона",
-        inline=True,
-    )
-    claim_embed.set_thumbnail(url=interaction.user.display_avatar.url)
-    claim_embed.set_footer(text="EGODiscord System • Ожидайте голосового вызова")
-    await interaction.followup.send(embed=claim_embed)
 
 
 async def _handle_call(interaction: discord.Interaction, config: dict):
@@ -336,47 +418,53 @@ async def _create_voice_channel(interaction: discord.Interaction,
         log.warning("Не удалось создать приглашение: %s", e)
         invite = None
 
-    # Премиум-embed голосового обзвона
-    embed = discord.Embed(
-        title="🎙️ Голосовой обзвон создан",
-        description=(
-            f"## 📞 Канал обзвона готов\n\n"
-            f"Кандидат и модераторы могут подключиться по кнопке ниже.\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        ),
-        color=COLOR_MAIN,
-        timestamp=now_msk(),
-    )
-    embed.add_field(
-        name="📢 Канал",
-        value=vc.mention,
-        inline=True,
-    )
-    embed.add_field(
-        name="👤 Кандидат",
-        value=user.mention if user else "—",
-        inline=True,
-    )
-    embed.add_field(
-        name="⏱️ Авто-удаление",
-        value="30 мин. после пустого",
-        inline=True,
-    )
-    embed.set_footer(text="EGODiscord System • Voice Interview")
+    # КОМПАКТНО: отредактировать embed управления (добавить голосовой канал)
+    # + показать кнопку "Подключиться к обзвону" в ephemeral сообщении
+    # Если есть claimer — берём Claimed view, иначе обычный
+    claimer_id = ticket.get("claimed_by")
+    claimer = guild.get_member(claimer_id) if claimer_id else None
 
-    view = ui.View(timeout=None)
+    if claimer:
+        new_view = TicketControlViewClaimed(config, claimer)
+    else:
+        new_view = TicketControlView(config)
+
+    new_embed = build_control_embed(
+        user=user or interaction.user,
+        ticket_type=ticket["type"],
+        status="claimed" if claimer else "open",
+        claimer=claimer,
+        voice_channel=vc,
+        steam_status="done",
+    )
+
+    try:
+        if interaction.response.is_done():
+            await interaction.message.edit(embed=new_embed, view=new_view)
+        else:
+            await interaction.response.edit_message(embed=new_embed, view=new_view)
+    except discord.HTTPException as e:
+        log.warning("Не удалось обновить embed управления: %s", e)
+
+    # ephemeral-кнопка для модератора (подключиться к обзвону)
     if invite:
-        view.add_item(ui.Button(
-            label="Подключиться к обзвону",
+        join_view = ui.View(timeout=600)
+        join_view.add_item(ui.Button(
+            label="📞 Подключиться к обзвону",
             style=discord.ButtonStyle.link,
             url=invite.url,
-            emoji="📞",
         ))
-
-    if interaction.response.is_done():
-        await interaction.followup.send(embed=embed, view=view)
-    else:
-        await interaction.response.send_message(embed=embed, view=view)
+        try:
+            await interaction.followup.send(
+                embed=build_success(
+                    title="🎙️ Голосовой канал создан",
+                    description=f"Канал: {vc.mention}\nКандидат: {user.mention if user else '—'}",
+                ),
+                view=join_view,
+                ephemeral=True,
+            )
+        except discord.HTTPException:
+            pass
 
 
 async def _handle_mute(interaction: discord.Interaction, config: dict):
@@ -427,14 +515,16 @@ async def _handle_mute(interaction: discord.Interaction, config: dict):
             embed=build_warning(
                 title="🔇 Кандидат заглушен",
                 description=f"{candidate.mention} был заглушен в голосовом канале.",
-            )
+            ),
+            ephemeral=True,
         )
     else:
         await interaction.response.send_message(
             embed=build_success(
                 title="🔊 Кандидат может говорить",
                 description=f"{candidate.mention} снова может говорить в голосовом канале.",
-            )
+            ),
+            ephemeral=True,
         )
 
 
@@ -504,14 +594,9 @@ class CloseDecisionView(ui.View):
                 embed=embeds.error_no_permission(), ephemeral=True
             )
             return
+        # КОМПАКТНО: просто меняем view на подтверждение, без отправки нового сообщения
         view = ConfirmCloseView(self.config, decision="accepted")
         await interaction.response.edit_message(view=view)
-        await interaction.followup.send(
-            embed=build_info(
-                title="✅ Принятие заявки",
-                description=f"{interaction.user.mention}, подтвердите действие кнопкой «Да».",
-            )
-        )
 
     @ui.button(label="Отклонить", emoji="❌",
                style=discord.ButtonStyle.danger, custom_id="ego_btn_reject")
@@ -523,12 +608,6 @@ class CloseDecisionView(ui.View):
             return
         view = ConfirmCloseView(self.config, decision="rejected")
         await interaction.response.edit_message(view=view)
-        await interaction.followup.send(
-            embed=build_info(
-                title="❌ Отклонение заявки",
-                description=f"{interaction.user.mention}, подтвердите действие кнопкой «Да».",
-            )
-        )
 
     @ui.button(label="Отмена", emoji="↩️",
                style=discord.ButtonStyle.secondary, custom_id="ego_btn_cancel_close")
@@ -538,8 +617,13 @@ class CloseDecisionView(ui.View):
                 embed=embeds.error_no_permission(), ephemeral=True
             )
             return
-        # Возвращаем основную панель
-        new_view = TicketControlView(self.config)
+        # КОМПАКТНО: возвращаем основную панель — с учётом claimer если есть
+        ticket = await database.ticket_get(interaction.channel.id)
+        if ticket and ticket.get("claimed_by"):
+            claimer = interaction.guild.get_member(ticket["claimed_by"])
+            new_view = TicketControlViewClaimed(self.config, claimer)
+        else:
+            new_view = TicketControlView(self.config)
         await interaction.response.edit_message(view=new_view)
 
 
@@ -573,12 +657,15 @@ class ConfirmCloseView(ui.View):
                 embed=embeds.error_no_permission(), ephemeral=True
             )
             return
-        # Возвращаем основную панель
-        new_view = TicketControlView(self.config)
+        # КОМПАКТНО: возвращаем основную панель без отправки нового сообщения
+        # Если тикет уже в работе (есть claimer) — возвращаем claimed view
+        ticket = await database.ticket_get(interaction.channel.id)
+        if ticket and ticket.get("claimed_by"):
+            claimer = interaction.guild.get_member(ticket["claimed_by"])
+            new_view = TicketControlViewClaimed(self.config, claimer)
+        else:
+            new_view = TicketControlView(self.config)
         await interaction.response.edit_message(view=new_view)
-        await interaction.followup.send(
-            embed=build_info(description="❎ Закрытие отменено.")
-        )
 
 
 class CloseReasonModal(ui.Modal, title="📝 Причина закрытия"):
@@ -598,9 +685,11 @@ class CloseReasonModal(ui.Modal, title="📝 Причина закрытия"):
 
     async def on_submit(self, interaction: discord.Interaction):
         reason = self.reason_input.value
-        await interaction.response.send_message(
-            embed=build_info(description="⏳ Обрабатываю закрытие..."),
-        )
+        # КОМПАКТНО: используем defer вместо видимого сообщения
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.HTTPException:
+            pass
         await _perform_close(
             interaction, self.config, self.decision, reason, self.closer
         )
@@ -628,6 +717,7 @@ async def _perform_close(interaction: discord.Interaction, config: dict,
     await _set_channel_emoji(channel, EMOJI_ACCEPTED if decision == "accepted" else EMOJI_REJECTED)
 
     # 2. Если принят — выдаём роль EGO
+    # Если отклонён — возвращаем оригинальный ник
     if decision == "accepted":
         accept_role_id = config.get("accept_role_id")
         if accept_role_id and user:
@@ -637,6 +727,24 @@ async def _perform_close(interaction: discord.Interaction, config: dict,
                     await user.add_roles(role, reason="Принят в EGO")
                 except discord.HTTPException as e:
                     log.warning("Не удалось выдать роль: %s", e)
+    elif decision == "rejected":
+        # ВОЗВРАЩАЕМ ОРИГИНАЛЬНЫЙ НИК
+        original_nick = ticket.get("original_nickname")
+        if user and original_nick:
+            try:
+                await user.edit(nick=original_nick, reason="Заявка отклонена — возврат исходного ника")
+                log.info("Ник возвращён: %s → %s", user, original_nick)
+            except discord.Forbidden:
+                log.warning("Нет прав на смену ника для %s (возврат при отклонении)", user)
+            except discord.HTTPException as e:
+                log.warning("Не удалось вернуть ник: %s", e)
+        elif user and not original_nick:
+            # Сохранённого ника нет — просто сбрасываем ник на username
+            try:
+                await user.edit(nick=None, reason="Заявка отклонена — сброс ника")
+                log.info("Ник сброшен: %s → %s (default)", user, user.name)
+            except (discord.Forbidden, discord.HTTPException) as e:
+                log.warning("Не удалось сбросить ник: %s", e)
 
     # 3. Статистика рекрутера
     reaction_time = 0
@@ -702,6 +810,12 @@ async def _perform_close(interaction: discord.Interaction, config: dict,
                         "Вам выдана роль **EGO**. Поздравляем!\n"
                         "Следите за каналами клана и присоединяйтесь к активности."
                     ),
+                    inline=False,
+                )
+            else:
+                dm_embed.add_field(
+                    name="↩️ Ваш ник",
+                    value="Ваш ник на сервере возвращён к исходному значению.",
                     inline=False,
                 )
             dm_embed.set_thumbnail(url=closer.display_avatar.url)
