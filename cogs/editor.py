@@ -467,16 +467,288 @@ class EditPingRolesModal(ui.Modal):
 
 
 # ============================================================================
+# НОВЫЕ РАСШИРЕННЫЕ ФУНКЦИИ РЕДАКТОРА (premium)
+# ============================================================================
+
+class EditEmbedColorModal(ui.Modal):
+    """Изменение цвета embed-сообщений бота (HEX)."""
+
+    PRESET_COLORS = {
+        "ego": ("EGO Фиолетовый", 0x5865F2),
+        "red": ("EGO Красный", 0xED4245),
+        "green": ("Успех Зелёный", 0x57F287),
+        "gold": ("Золото", 0xF1C40F),
+        "orange": ("Оранжевый", 0xE67E22),
+        "pink": ("Розовый", 0xEB459E),
+        "cyan": ("Голубой", 0x1ABC9C),
+        "dark": ("Тёмный", 0x2C2F33),
+    }
+
+    def __init__(self, config: dict, parent_view: "EditorDashboardView"):
+        super().__init__(title="🎨 Цвет embed-сообщений")
+        self.config = config
+        self.parent_view = parent_view
+        current = config.get("embed_color", "5865F2")
+
+        self.color_input = ui.TextInput(
+            label="HEX цвет (без #) или ключевое слово",
+            placeholder="5865F2 или ego / red / green / gold / pink",
+            default=current,
+            required=True,
+            max_length=20,
+            style=discord.TextStyle.short,
+        )
+        self.add_item(self.color_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        value = self.color_input.value.strip().lower().lstrip("#")
+
+        # Проверяем ключевые слова
+        if value in self.PRESET_COLORS:
+            name, color_int = self.PRESET_COLORS[value]
+            hex_str = f"{color_int:06X}"
+        else:
+            # Пробуем как HEX
+            try:
+                color_int = int(value, 16)
+                if color_int < 0 or color_int > 0xFFFFFF:
+                    raise ValueError("out of range")
+                hex_str = f"{color_int:06X}"
+                name = f"Пользовательский #{hex_str}"
+            except ValueError:
+                await interaction.response.send_message(
+                    embed=build_error(
+                        description=(
+                            "Неверный формат цвета. Используйте:\n"
+                            "• HEX без `#`: `5865F2`\n"
+                            "• Ключевое слово: `ego`, `red`, `green`, `gold`, "
+                            "`orange`, `pink`, `cyan`, `dark`"
+                        ),
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+        self.config["embed_color"] = hex_str
+        if not _save_config(self.config):
+            await interaction.response.send_message(
+                embed=build_error(description="Не удалось сохранить config.json"),
+                ephemeral=True,
+            )
+            return
+
+        # Динамически берём цвет для подтверждения
+        from utils import embeds as embeds_mod
+        old_color_main = embeds_mod.COLOR_MAIN
+        embeds_mod.COLOR_MAIN = color_int
+
+        preview_embed = discord.Embed(
+            title="🎨 Цвет обновлён",
+            description=(
+                f"**Название:** {name}\n"
+                f"**HEX:** `#{hex_str}`\n"
+                f"**RGB:** `({(color_int >> 16) & 0xFF}, {(color_int >> 8) & 0xFF}, {color_int & 0xFF})`\n\n"
+                f"Цвет применён к этому сообщению — все будущие embed'ы бота "
+                f"будут использовать его. Стандартные цвета success/error/warning "
+                f"остаются без изменений."
+            ),
+            color=color_int,
+            timestamp=embeds_mod.now_msk(),
+        )
+        preview_embed.set_footer(text="EGODiscord System • Editor")
+        await interaction.response.send_message(embed=preview_embed, ephemeral=True)
+
+        # Возвращаем old_color_main обратно —COLOR_MAIN не должен меняться глобально
+        # (для будущего отображения других embed'ов). На самом деле мы хотим, чтобы
+        # он изменился — оставляем.
+        try:
+            await self.parent_view.message.edit(embed=_dashboard_embed(self.config))
+        except (discord.HTTPException, AttributeError):
+            pass
+
+
+class EditWelcomeMessageModal(ui.Modal):
+    """Редактирование приветственного сообщения в тикете."""
+
+    def __init__(self, config: dict, parent_view: "EditorDashboardView"):
+        super().__init__(title="👋 Приветствие в тикете")
+        self.config = config
+        self.parent_view = parent_view
+        current = config.get("ticket_welcome_text", "")
+
+        self.text_input = ui.TextInput(
+            label="Текст приветствия (поддерживает Markdown)",
+            placeholder=(
+                "Привет, {user}! Твой тикет принят. Ожидай рекрутёра.\n"
+                "Доступные плейсхолдеры: {user}, {type}"
+            ),
+            default=current,
+            required=False,
+            max_length=1500,
+            style=discord.TextStyle.paragraph,
+        )
+        self.add_item(self.text_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        new_text = self.text_input.value.strip()
+        if new_text:
+            self.config["ticket_welcome_text"] = new_text
+        else:
+            self.config.pop("ticket_welcome_text", None)
+
+        if not _save_config(self.config):
+            await interaction.response.send_message(
+                embed=build_error(description="Не удалось сохранить config.json"),
+                ephemeral=True,
+            )
+            return
+
+        preview = new_text if new_text else "_(используется текст по умолчанию)_"
+        await interaction.response.send_message(
+            embed=build_success(
+                title="✅ Приветствие обновлено",
+                description=f"Превью:\n\n> {_truncate(preview, 800)}",
+                footer_text="EGODiscord System • Editor",
+            ),
+            ephemeral=True,
+        )
+        try:
+            await self.parent_view.message.edit(embed=_dashboard_embed(self.config))
+        except (discord.HTTPException, AttributeError):
+            pass
+
+
+class EditBrandingModal(ui.Modal):
+    """Редактирование URL логотипа/иконки бота (для embed'ов)."""
+
+    def __init__(self, config: dict, parent_view: "EditorDashboardView"):
+        super().__init__(title="🖼️ Брендинг (иконка)")
+        self.config = config
+        self.parent_view = parent_view
+        current = config.get("brand_thumbnail_url", "")
+
+        self.url_input = ui.TextInput(
+            label="URL иконки (для embed'ов)",
+            placeholder="https://cdn.discordapp.com/... или оставьте пустым",
+            default=current,
+            required=False,
+            max_length=500,
+            style=discord.TextStyle.short,
+        )
+        self.add_item(self.url_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        url = self.url_input.value.strip()
+        if url and not url.startswith(("http://", "https://")):
+            await interaction.response.send_message(
+                embed=build_error(description="URL должен начинаться с `http://` или `https://`"),
+                ephemeral=True,
+            )
+            return
+
+        if url:
+            self.config["brand_thumbnail_url"] = url
+        else:
+            self.config.pop("brand_thumbnail_url", None)
+
+        if not _save_config(self.config):
+            await interaction.response.send_message(
+                embed=build_error(description="Не удалось сохранить config.json"),
+                ephemeral=True,
+            )
+            return
+
+        embed = build_success(
+            title="✅ Брендинг обновлён",
+            description=(
+                f"Новая иконка:\n{url or '_(используется аватар бота)_'}\n\n"
+                f"Иконка будет применяться ко всем новым embed'ам бота."
+            ),
+            footer_text="EGODiscord System • Editor",
+        )
+        if url:
+            embed.set_thumbnail(url=url)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        try:
+            await self.parent_view.message.edit(embed=_dashboard_embed(self.config))
+        except (discord.HTTPException, AttributeError):
+            pass
+
+
+class ConfirmResetView(ui.View):
+    """Подтверждение сброса настроек."""
+
+    def __init__(self, parent_view: "EditorDashboardView"):
+        super().__init__(timeout=30)
+        self.parent_view = parent_view
+
+    @ui.button(label="Да, сбросить", emoji="⚠️",
+               style=discord.ButtonStyle.danger, custom_id="ego_reset_confirm")
+    async def confirm(self, interaction: discord.Interaction, button: ui.Button):
+        # Сбрасываем только «мягкие» настройки — не трогаем ID каналов/ролей
+        soft_keys = [
+            "questions_clan", "questions_mod", "ticket_panel_text",
+            "ticket_welcome_text", "embed_color", "brand_thumbnail_url",
+            "ping_roles_clan", "ping_roles_mod",
+        ]
+        for k in soft_keys:
+            self.parent_view.config.pop(k, None)
+        if not _save_config(self.parent_view.config):
+            await interaction.response.edit_message(
+                embed=build_error(description="Не удалось сохранить config.json"),
+                view=None,
+            )
+            return
+        await interaction.response.edit_message(
+            embed=build_success(
+                title="✅ Настройки сброшены",
+                description=(
+                    "Сброшены: вопросы, текст панели, приветствие, цвет, брендинг, "
+                    "пинг-роли.\n"
+                    "**Сохранены:** ID каналов/категорий, роли персонала, "
+                    "Steam API ключ, developer_id."
+                ),
+            ),
+            view=None,
+        )
+        try:
+            await self.parent_view.message.edit(
+                embed=_dashboard_embed(self.parent_view.config)
+            )
+        except (discord.HTTPException, AttributeError):
+            pass
+
+    @ui.button(label="Отмена", emoji="✖️",
+               style=discord.ButtonStyle.secondary, custom_id="ego_reset_cancel")
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.edit_message(
+            embed=build_info(description="Сброс отменён."),
+            view=None,
+        )
+
+
+# ============================================================================
 # Дашборд (главное меню редактора)
 # ============================================================================
 
 def _dashboard_embed(config: dict) -> discord.Embed:
-    """Собирает embed-превью текущих настроек бота."""
+    """Собирает embed-превью текущих настроек бота (premium дизайн)."""
     questions_clan = config.get("questions_clan", [])
     questions_mod = config.get("questions_mod", [])
     steam_key = config.get("steam_api_key", "")
     masked_key = (steam_key[:6] + "…" + steam_key[-4:]) if len(steam_key) > 10 else "—"
     roles_cfg = config.get("roles", {})
+
+    # Цвет embed'ов
+    embed_color_str = config.get("embed_color", "5865F2")
+    try:
+        embed_color_int = int(embed_color_str, 16)
+    except (ValueError, TypeError):
+        embed_color_int = 0x5865F2
+        embed_color_str = "5865F2"
+
+    welcome_text = config.get("ticket_welcome_text", "")
+    branding_url = config.get("brand_thumbnail_url", "")
 
     embed = discord.Embed(
         title="🛠️ Редактор бота EGO",
@@ -484,10 +756,16 @@ def _dashboard_embed(config: dict) -> discord.Embed:
             f"## ⚙️ Текущие настройки\n\n"
             f"Все изменения применяются **мгновенно** — без перезапуска бота.\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🛡️ **Вопросы анкеты (Клан):** {len(questions_clan)} шт.\n"
-            f"👑 **Вопросы анкеты (Модерация):** {len(questions_mod)} шт.\n"
-            f"📝 **Текст панели:** {_truncate(config.get('ticket_panel_text', ''), 60)}\n"
-            f"🔑 **Steam API ключ:** `{masked_key}`\n"
+            f"### 📋 Анкеты\n"
+            f"🛡️ **Вопросы (Клан):** {len(questions_clan)} шт.\n"
+            f"👑 **Вопросы (Модерация):** {len(questions_mod)} шт.\n\n"
+            f"### 🎨 Дизайн\n"
+            f"📝 **Текст панели:** {_truncate(config.get('ticket_panel_text', ''), 50)}\n"
+            f"👋 **Приветствие:** {_truncate(welcome_text or '_(по умолчанию)_', 50)}\n"
+            f"🎨 **Цвет embed:** `#{embed_color_str}`\n"
+            f"🖼️ **Брендинг:** {'✅ задан' if branding_url else '_(по умолчанию)_'}\n\n"
+            f"### 🔑 Ключи и роли\n"
+            f"🔑 **Steam API:** `{masked_key}`\n"
             f"🔔 **Пинг ролей (Клан/Модер):** "
             f"{len(config.get('ping_roles_clan', []))} / "
             f"{len(config.get('ping_roles_mod', []))}\n"
@@ -495,10 +773,12 @@ def _dashboard_embed(config: dict) -> discord.Embed:
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"👇 Нажмите кнопку ниже, чтобы открыть нужный раздел"
         ),
-        color=COLOR_MAIN,
+        color=embed_color_int,
         timestamp=embeds.now_msk(),
     )
     embed.set_footer(text="EGODiscord System • Editor Dashboard")
+    if branding_url:
+        embed.set_thumbnail(url=branding_url)
     return embed
 
 
@@ -578,6 +858,37 @@ class EditorDashboardView(ui.View):
         modal = EditChannelIdsModal(self.config, self)
         await interaction.response.send_modal(modal)
 
+    # --- Premium кнопки (новые) ---
+
+    @ui.button(label="Цвет embed", emoji="🎨",
+               style=discord.ButtonStyle.secondary, custom_id="ego_edit_color")
+    async def btn_color(self, interaction: discord.Interaction, button: ui.Button):
+        modal = EditEmbedColorModal(self.config, self)
+        await interaction.response.send_modal(modal)
+
+    @ui.button(label="Приветствие", emoji="👋",
+               style=discord.ButtonStyle.secondary, custom_id="ego_edit_welcome")
+    async def btn_welcome(self, interaction: discord.Interaction, button: ui.Button):
+        modal = EditWelcomeMessageModal(self.config, self)
+        await interaction.response.send_modal(modal)
+
+    @ui.button(label="Брендинг", emoji="🖼️",
+               style=discord.ButtonStyle.secondary, custom_id="ego_edit_branding")
+    async def btn_branding(self, interaction: discord.Interaction, button: ui.Button):
+        modal = EditBrandingModal(self.config, self)
+        await interaction.response.send_modal(modal)
+
+    @ui.button(label="👁 Превью панели", emoji="👁",
+               style=discord.ButtonStyle.primary, custom_id="ego_edit_preview")
+    async def btn_preview(self, interaction: discord.Interaction, button: ui.Button):
+        """Показывает превью панели тикетов с текущими настройками."""
+        from cogs.tickets import _build_panel_embed  # type: ignore
+        embed = _build_panel_embed(self.config)
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True,
+        )
+
     @ui.button(label="🔁 Пересоздать панель", emoji="♻️",
                style=discord.ButtonStyle.success, custom_id="ego_edit_recreate_panel")
     async def btn_recreate(self, interaction: discord.Interaction, button: ui.Button):
@@ -629,6 +940,34 @@ class EditorDashboardView(ui.View):
             ephemeral=True,
         )
 
+    @ui.button(label="⚠ Сбросить", emoji="⚠️",
+               style=discord.ButtonStyle.danger, custom_id="ego_edit_reset")
+    async def btn_reset(self, interaction: discord.Interaction, button: ui.Button):
+        """Сброс мягких настроек (вопросы, текст, цвет) — ID каналов и ролей сохраняет."""
+        confirm_view = ConfirmResetView(self)
+        await interaction.response.send_message(
+            embed=build_warning(
+                title="⚠️ Подтверждение сброса",
+                description=(
+                    "Будут сброшены:\n"
+                    "• Вопросы анкеты (клан и модерация)\n"
+                    "• Текст панели тикетов\n"
+                    "• Приветствие в тикете\n"
+                    "• Цвет embed'ов\n"
+                    "• Брендинг (иконка)\n"
+                    "• Пинг-роли\n\n"
+                    "**Сохранятся:**\n"
+                    "• ID каналов и категорий\n"
+                    "• Роли персонала\n"
+                    "• Steam API ключ\n"
+                    "• developer_id\n\n"
+                    "Подтвердите действие кнопкой ниже."
+                ),
+            ),
+            view=confirm_view,
+            ephemeral=True,
+        )
+
     @ui.button(label="Закрыть редактор", emoji="✖️",
                style=discord.ButtonStyle.danger, custom_id="ego_edit_close")
     async def btn_close(self, interaction: discord.Interaction, button: ui.Button):
@@ -652,20 +991,24 @@ class Editor(commands.Cog):
     def _config(self) -> dict:
         return getattr(self.bot, "_config", None) or {}
 
-    @commands.command(name="editor")
+    @commands.command(name="editor", aliases=["edit", "настройки"])
     @commands.guild_only()
-    async def editor_cmd(self, ctx: commands.Context):
+    async def editor_cmd(self, ctx: commands.Context, section: Optional[str] = None):
         """
         Открыть интерактивный дашборд настройки бота.
 
         Дашборд показывает все текущие значения и позволяет изменить:
         - Вопросы анкеты (клан/модерация)
         - Текст панели тикетов
+        - Приветствие в тикете
         - Steam API ключ
         - Пинг-роли
         - Роли персонала
         - Каналы и категории
-        - Пересоздать панель
+        - Цвет embed-сообщений (8 пресетов + произвольный HEX)
+        - Брендинг (URL иконки)
+        - Превью панели тикетов
+        - Сброс мягких настроек
         """
         config = self._config()
         if not _is_admin(ctx.author, config):

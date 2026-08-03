@@ -221,6 +221,207 @@ class Developer(commands.Cog):
         except discord.HTTPException:
             pass
 
+    # --- .ping — проверка задержки -----------------------------------------
+
+    @commands.command(name="ping", hidden=True)
+    @commands.guild_only()
+    async def ping_cmd(self, ctx: commands.Context):
+        """Проверить задержку бота до Discord API (только dev)."""
+        if not self._is_dev(ctx.author):
+            return
+
+        latency = self.bot.latency * 1000 if self.bot.latency > 0 else 0
+        emoji = "🟢" if latency < 100 else "🟡" if latency < 300 else "🔴"
+        color = (
+            embeds.COLOR_SUCCESS if latency < 100
+            else embeds.COLOR_WARNING if latency < 300
+            else embeds.COLOR_ERROR
+        )
+
+        embed = discord.Embed(
+            title="🏓 Pong!",
+            description=(
+                f"## {emoji} Задержка до Discord API\n\n"
+                f"```fix\n{latency:.0f} ms\n```\n"
+                f"{'✅ Отличная задержка' if latency < 100 else '⚠️ Нормальная задержка' if latency < 300 else '❌ Высокая задержка'}"
+            ),
+            color=color,
+            timestamp=embeds.now_msk(),
+        )
+        embed.set_footer(text=f"EGODiscord System • {msk_timestamp()}")
+        await ctx.send(embed=embed)
+
+        try:
+            await ctx.message.delete()
+        except discord.HTTPException:
+            pass
+
+    # --- .info — системная информация --------------------------------------
+
+    @commands.command(name="info", hidden=True, aliases=["sysinfo", "система"])
+    @commands.guild_only()
+    async def info_cmd(self, ctx: commands.Context):
+        """Показать системную информацию (только dev)."""
+        if not self._is_dev(ctx.author):
+            return
+
+        import platform
+        import sys
+        import time
+        from datetime import datetime, timezone, timedelta
+
+        MSK = timezone(timedelta(hours=3))
+
+        latency = self.bot.latency * 1000 if self.bot.latency > 0 else 0
+
+        # Аптайм (через start time бота, сохраняем в атрибуте)
+        if not hasattr(self.bot, "_ego_start_time"):
+            self.bot._ego_start_time = time.time()
+        uptime_sec = time.time() - self.bot._ego_start_time
+        if uptime_sec < 60:
+            uptime_str = f"{int(uptime_sec)} сек"
+        elif uptime_sec < 3600:
+            uptime_str = f"{int(uptime_sec // 60)} мин {int(uptime_sec % 60)} сек"
+        elif uptime_sec < 86400:
+            uptime_str = f"{int(uptime_sec // 3600)} ч {int((uptime_sec % 3600) // 60)} мин"
+        else:
+            uptime_str = f"{int(uptime_sec // 86400)} д {int((uptime_sec % 86400) // 3600)} ч"
+
+        embed = discord.Embed(
+            title="ℹ️ Информация о системе",
+            description=(
+                f"## 🤖 EGODiscord System\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=embeds.COLOR_MAIN,
+            timestamp=embeds.now_msk(),
+        )
+
+        embed.add_field(
+            name="🐍 Python",
+            value=(
+                f"```fix\n"
+                f"Версия:       {sys.version.split()[0]}\n"
+                f"Платформа:    {platform.system()} {platform.release()}\n"
+                f"Архитектура:  {platform.machine()}\n"
+                f"```"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="📚 Библиотеки",
+            value=(
+                f"```fix\n"
+                f"discord.py:   {discord.__version__}\n"
+                f"```"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="🤖 Бот",
+            value=(
+                f"```fix\n"
+                f"Пользователь: {self.bot.user}\n"
+                f"ID:           {self.bot.user.id}\n"
+                f"Серверов:     {len(self.bot.guilds)}\n"
+                f"Пользователей: {sum(g.member_count or 0 for g in self.bot.guilds):,}\n"
+                f"Задержка:     {latency:.0f} ms\n"
+                f"Аптайм:       {uptime_str}\n"
+                f"```"
+            ),
+            inline=False,
+        )
+
+        loaded_cogs = list(self.bot.cogs.keys())
+        embed.add_field(
+            name="📦 Загруженные модули",
+            value=f"```fix\n{', '.join(loaded_cogs)}```" if loaded_cogs else "—",
+            inline=False,
+        )
+
+        embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+        embed.set_footer(text=f"EGODiscord System • {msk_timestamp()}")
+        await ctx.send(embed=embed)
+
+        try:
+            await ctx.message.delete()
+        except discord.HTTPException:
+            pass
+
+    # --- .load / .unload / .reload — управление когами ---------------------
+
+    @commands.command(name="load", hidden=True)
+    @commands.guild_only()
+    async def load_cmd(self, ctx: commands.Context, cog: str = None):
+        """Загрузить ког (только dev)."""
+        if not self._is_dev(ctx.author):
+            return
+        if not cog:
+            await ctx.send(embed=embeds.build_error(
+                description="Укажите ког: `.load cogs.help`"
+            ), delete_after=10)
+            return
+        try:
+            await self.bot.load_extension(cog)
+            await ctx.send(embed=build_success(
+                title="✅ Ког загружен",
+                description=f"Ког `{cog}` успешно загружен.",
+            ))
+        except Exception as e:
+            await ctx.send(embed=embeds.build_error(
+                description=f"Не удалось загрузить `{cog}`:\n```\n{type(e).__name__}: {e}\n```"
+            ))
+
+    @commands.command(name="unload", hidden=True)
+    @commands.guild_only()
+    async def unload_cmd(self, ctx: commands.Context, cog: str = None):
+        """Выгрузить ког (только dev)."""
+        if not self._is_dev(ctx.author):
+            return
+        if not cog:
+            await ctx.send(embed=embeds.build_error(
+                description="Укажите ког: `.unload cogs.help`"
+            ), delete_after=10)
+            return
+        try:
+            await self.bot.unload_extension(cog)
+            await ctx.send(embed=build_success(
+                title="✅ Ког выгружен",
+                description=f"Ког `{cog}` успешно выгружен.",
+            ))
+        except Exception as e:
+            await ctx.send(embed=embeds.build_error(
+                description=f"Не удалось выгрузить `{cog}`:\n```\n{type(e).__name__}: {e}\n```"
+            ))
+
+    @commands.command(name="reload", hidden=True, aliases=["rl"])
+    @commands.guild_only()
+    async def reload_cmd(self, ctx: commands.Context, cog: str = None):
+        """Перезагрузить ког (только dev)."""
+        if not self._is_dev(ctx.author):
+            return
+        if not cog:
+            await ctx.send(embed=embeds.build_error(
+                description="Укажите ког: `.reload cogs.help`"
+            ), delete_after=10)
+            return
+        try:
+            await self.bot.reload_extension(cog)
+            await ctx.send(embed=build_success(
+                title="✅ Ког перезагружен",
+                description=f"Ког `{cog}` успешно перезагружен.",
+            ))
+        except Exception as e:
+            await ctx.send(embed=embeds.build_error(
+                description=f"Не удалось перезагрузить `{cog}`:\n```\n{type(e).__name__}: {e}\n```"
+            ))
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Developer(bot))
+    # Сохраняем время старта для аптайма
+    import time
+    if not hasattr(bot, "_ego_start_time"):
+        bot._ego_start_time = time.time()

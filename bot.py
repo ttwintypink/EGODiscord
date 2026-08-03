@@ -191,6 +191,7 @@ INITIAL_COGS = [
     "cogs.moderation",
     "cogs.developer",
     "cogs.editor",
+    "cogs.menu",
     "cogs.help",
 ]
 

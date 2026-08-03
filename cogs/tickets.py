@@ -75,7 +75,7 @@ def _build_panel_embed(config: dict) -> discord.Embed:
         value=(
             "**1.** Выбери категорию в меню ниже\n"
             "**2.** Заполни анкету (потребуется SteamID или ссылка на профиль)\n"
-            "**3.** Ожидай голосового обзвона от рекрутёра\n"
+            "**3.** Ожидай собеседования от рекрутёра\n"
             "**4.** Получи ответ от рекрутёра в личные сообщения"
         ),
         inline=False,
@@ -140,11 +140,16 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
         except discord.HTTPException:
             pass
 
-        # Собираем ответы (обращаемся к .label через data, т.к. в новых версиях
-        # discord.py TextInput.label помечен как deprecated)
+        # Собираем ответы. В discord.py 2.7+ у TextInput есть .label напрямую,
+        # старый .data пропал. Используем безопасный обход.
         answers = []
         for inp in self._inputs:
-            label = getattr(inp, "_label", None) or inp.data.get("label") or "Вопрос"
+            # Приоритет: приватный _label (самый надёжный) → публичный label → fallback
+            label = (
+                getattr(inp, "_label", None)
+                or getattr(inp, "label", None)
+                or "Вопрос"
+            )
             answers.append((label, inp.value))
         await self._create_ticket(interaction, answers)
 
