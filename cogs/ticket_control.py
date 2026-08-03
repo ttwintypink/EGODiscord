@@ -187,20 +187,19 @@ async def _handle_claim(interaction: discord.Interaction, config: dict,
     # Записываем claim в БД
     await database.ticket_set_claimed(interaction.channel.id, interaction.user.id)
 
-    # Убираем кнопку Claim из view
-    button.disabled = True
-    button.label = f"В работе: {interaction.user.display_name}"
+    # Перезаписываем сообщение с обновлённым view (Claim -> Claimed)
+    # Кнопка «Взять в работу» заменяется на индикатор «В работе: <модератор>»
+    new_view = TicketControlViewClaimed(config, interaction.user)
     try:
-        await interaction.response.edit_message(view=interaction.message.components[0] if interaction.message.components else None)
-    except discord.HTTPException:
-        pass
-
-    # Перезаписываем сообщение с обновлённым view (без кнопки Claim)
-    new_view = TicketControlViewClaimed(config)
-    try:
-        await interaction.message.edit(view=new_view)
+        await interaction.response.edit_message(view=new_view)
     except discord.HTTPException as e:
-        log.warning("Не удалось обновить view: %s", e)
+        log.warning("Не удалось обновить view после claim: %s", e)
+        try:
+            await interaction.followup.edit_message(
+                interaction.message.id, view=new_view
+            )
+        except discord.HTTPException:
+            pass
 
     # Пишем «Тикет взят в работу»
     await interaction.followup.send(
@@ -400,9 +399,21 @@ async def _handle_mute(interaction: discord.Interaction, config: dict):
 # ============================================================================
 
 class TicketControlViewClaimed(ui.View):
-    def __init__(self, config: dict):
+    """View после Claim: показывает кто взял + кнопки Обзвон/Мут/Закрыть."""
+
+    def __init__(self, config: dict, claimer: Optional[discord.abc.User] = None):
         super().__init__(timeout=None)
         self.config = config
+        # Кнопка-индикатор «В работе» (disabled) — показывает модератора
+        claimer_name = claimer.display_name if claimer else "модератор"
+        self.claim_indicator.label = f"В работе: {claimer_name}"
+
+    @ui.button(label="В работе", emoji="🤝",
+               style=discord.ButtonStyle.success, custom_id="ego_btn_claimed_indicator",
+               disabled=True)
+    async def claim_indicator(self, interaction: discord.Interaction, button: ui.Button):
+        # Кнопка disabled — callback не вызывается, но нужен декоратор
+        pass
 
     @ui.button(label="Обзвон", emoji="🎙️",
                style=discord.ButtonStyle.secondary, custom_id="ego_btn_call_2")

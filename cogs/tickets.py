@@ -77,8 +77,13 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
         except discord.HTTPException:
             pass
 
-        # Собираем ответы
-        answers = [(inp.label, inp.value) for inp in self._inputs]
+        # Собираем ответы (обращаемся к .label через data, т.к. в новых версиях
+        # discord.py TextInput.label помечен как deprecated)
+        answers = []
+        for inp in self._inputs:
+            # Безопасное получение label: через data dict, через _label, или fallback
+            label = getattr(inp, "_label", None) or inp.data.get("label") or "Вопрос"
+            answers.append((label, inp.value))
         await self._create_ticket(interaction, answers)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
@@ -177,19 +182,24 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
         ping_str = " ".join(f"<@&{rid}>" for rid in ping_role_ids) if ping_role_ids else ""
 
         hello_embed = build_main(
-            title="🎫 Добро пожаловать в тикет!",
+            title=f"{'🛡️' if self.ticket_type == 'clan' else '👑'} Тикет создан",
             description=(
-                f"Привет, {user.mention}!\n\n"
-                f"Тип заявки: **{'Набор в клан' if self.ticket_type == 'clan' else 'Набор в модерацию'}**\n\n"
-                f"👇 Ознакомьтесь с вашей анкетой ниже (она закреплена).\n"
-                f"⏳ Ожидайте ответа модерации — обычно это занимает несколько минут.\n\n"
-                f"`Создано`: {msk_timestamp()}"
+                f"## Привет, {user.mention}! 👋\n\n"
+                f"Тип заявки: **{'🛡️ Набор в клан EGO' if self.ticket_type == 'clan' else '👑 Набор в модерацию EGO'}**\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📋 **Что дальше?**\n"
+                f"• Ознакомься со своей анкетой ниже (она закреплена)\n"
+                f"• Ожидай голосового обзвона от рекрутёра\n"
+                f"• Будь готов ответить на дополнительные вопросы\n\n"
+                f"⏳ Обычно ответ занимает **несколько минут**\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             ),
             fields=[
-                ("Кандидат", f"{user.mention}\n`{user.id}`", True),
-                ("Тип", "Клан 🛡️" if self.ticket_type == "clan" else "Модерация 👑", True),
-                ("Канал", channel.mention, True),
+                ("👤 Кандидат", f"{user.mention}\n`{user.id}`", True),
+                ("📂 Тип заявки", "🛡️ Клан" if self.ticket_type == "clan" else "👑 Модерация", True),
+                ("📅 Создан", msk_timestamp(), True),
             ],
+            footer_text="EGODiscord System • Не закрывай тикет, ожидай ответа",
         )
 
         # Кнопки управления
@@ -277,11 +287,20 @@ class ApplicationModal(ui.Modal, title="📝 Анкета EGO"):
             result = {"success": False, "error": str(e)}
 
         if not result.get("success"):
+            error_msg = result.get("error", "неизвестно")
+            # Человеко-читаемые сообщения для частых ошибок
+            if "invalid_api_key" in str(error_msg):
+                error_msg = "Невалидный Steam API ключ. Обратитесь к разработчику бота."
+            elif "rate_limited" in str(error_msg):
+                error_msg = "Превышен лимит запросов к Steam API. Попробуйте позже."
+            elif "403" in str(error_msg):
+                error_msg = "Steam API отклонил запрос (403). Проверьте STEAM_API_KEY в config.json."
+
             embed = build_warning(
                 title="🛡️ Проверка Steam — не удалась",
                 description=f"Не удалось проверить аккаунт.\n"
                             f"Ввод: `{steam_raw[:200]}`\n"
-                            f"Причина: `{result.get('error', 'неизвестно')}`",
+                            f"Причина: `{error_msg}`",
             )
             try:
                 await channel.send(embed=embed)
@@ -442,15 +461,38 @@ class Tickets(commands.Cog):
 
         embed = build_main(
             title="🛡️ СИСТЕМА НАБОРА EGO",
-            description=config.get(
-                "ticket_panel_text",
-                "🎫 СИСТЕМА НАБОРА КЛАНА EGO\n\n"
-                "Выберите интересующую вас категорию в меню ниже...",
+            description=(
+                config.get(
+                    "ticket_panel_text",
+                    "## 🛡️ СИСТЕМА НАБОРА КЛАНА EGO\n\n"
+                    "Добро пожаловать в систему подачи заявок клана **EGO**.\n"
+                    "Выберите интересующую вас категорию в меню ниже, чтобы начать.\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                )
             ),
             fields=[
-                ("🛡️ Набор в клан", "Подайте заявку на вступление в клан EGO.", False),
-                ("👑 Набор в модерацию", "Подайте заявку на должность модератора.", False),
+                (
+                    "🛡️ Набор в клан",
+                    "Хочешь стать частью сильнейшего клана?\n"
+                    "Подай заявку и докажи, что достоин носить тег **EGO**.",
+                    False,
+                ),
+                (
+                    "👑 Набор в модерацию",
+                    "Готов поддерживать порядок и помогать клану расти?\n"
+                    "Подай заявку на должность модератора.",
+                    False,
+                ),
+                (
+                    "📝 Как это работает",
+                    "**1.** Выбери категорию в меню ниже\n"
+                    "**2.** Заполни анкету (потребуется SteamID)\n"
+                    "**3.** Ожидай голосового обзвона\n"
+                    "**4.** Получи ответ от рекрутёра",
+                    False,
+                ),
             ],
+            footer_text="EGODiscord System • Выбери категорию в меню ниже ⬇️",
         )
 
         view = TicketPanelView(config)

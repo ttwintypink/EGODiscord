@@ -29,6 +29,7 @@ except ImportError:
 import database
 from cogs.ticket_control import (
     TicketControlView,
+    TicketControlViewClaimed,
     RestoreTicketView,
 )
 from cogs.tickets import TicketPanelView, ApplicationModal
@@ -91,6 +92,7 @@ async def on_ready():
     # - CloseDecisionView, ConfirmCloseView — временные (timeout), не persistent.
     bot.add_view(TicketPanelView(CONFIG))
     bot.add_view(TicketControlView(CONFIG))
+    bot.add_view(TicketControlViewClaimed(CONFIG))
     bot.add_view(RestoreTicketView(CONFIG))
 
     # Запускаем фоновые задачи (если ещё не запущены)
@@ -102,9 +104,78 @@ async def on_ready():
         status=discord.Status.online,
         activity=discord.Activity(
             type=discord.ActivityType.watching,
-            name="за заявками EGO | .setup"
+            name="за заявками EGO | .help"
         ),
     )
+
+
+# --- Глобальная обработка ошибок команд ------------------------------------
+@bot.event
+async def on_command_error(ctx: commands.Context, error: Exception):
+    """Ловим ошибки команд — пишем пользователю, в лог без шума."""
+    # CommandNotFound — пользователь написал несуществующую команду.
+    # Не логируем как ERROR (мусор), просто игнорируем.
+    if isinstance(error, commands.CommandNotFound):
+        # Подсказка, если похоже на опечатку или попытку .help
+        invoked = ctx.invoked_with.lower() if ctx.invoked_with else ""
+        if invoked in ("help", "h", "?", "команды", "помощь"):
+            embed = discord.Embed(
+                title="📋 Команды EGO System",
+                description=(
+                    "Префикс команд: **`.`**\n\n"
+                    "**🎫 Тикеты:**\n"
+                    "`.setup` — установить панель тикетов *(только разработчик)*\n\n"
+                    "**👑 Модерация:**\n"
+                    "`.blacklist add @user` — добавить в ЧС\n"
+                    "`.blacklist remove @user` — убрать из ЧС\n"
+                    "`.blacklist list` — список ЧС\n"
+                    "`.stats` — ТОП рекрутеров\n"
+                    "`.setup-voprosy` — изменить вопросы анкеты\n\n"
+                    "**📞 Для разработчика (внутри тикета):**\n"
+                    "`.call <текст>` — написать кандидату в ЛС\n"
+                    "`.voice` — создать голосовой канал обзвона"
+                ),
+                color=0x5865F2,
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.set_footer(text="EGODiscord System")
+            try:
+                await ctx.send(embed=embed)
+            except discord.HTTPException:
+                pass
+        return
+
+    if isinstance(error, commands.MissingRequiredArgument):
+        try:
+            await ctx.send(
+                embed=discord.Embed(
+                    title="⚠️ Недостаточно аргументов",
+                    description=f"Команда `.{ctx.command}` требует аргументы.\n"
+                                f"Использование: `.{ctx.command} {ctx.command.signature}`",
+                    color=0xFEE75C,
+                ).set_footer(text="EGODiscord System"),
+            )
+        except discord.HTTPException:
+            pass
+        return
+
+    if isinstance(error, commands.CheckFailure):
+        # Молча игнорируем проверки (например, guild_only)
+        return
+
+    # Прочие ошибки — логируем
+    log.exception("Ошибка в команде %s: %s", ctx.command, error)
+    try:
+        await ctx.send(
+            embed=discord.Embed(
+                title="❌ Ошибка",
+                description=f"Произошла ошибка при выполнении команды.\n"
+                            f"```\n{type(error).__name__}: {error}\n```",
+                color=0xED4245,
+            ).set_footer(text="EGODiscord System"),
+        )
+    except discord.HTTPException:
+        pass
 
 
 # --- Загрузка когов ---------------------------------------------------------

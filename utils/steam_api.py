@@ -145,6 +145,18 @@ async def _api_get(session: aiohttp.ClientSession, endpoint: str,
     url = f"{STEAM_API_BASE}/{endpoint}"
     try:
         async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            if resp.status == 403:
+                # 403 = невалидный API key или key заблокирован.
+                # Логируем ОДИН раз (не засоряем лог повторными 403).
+                log.error(
+                    "Steam API %s: 403 Forbidden — невалидный STEAM_API_KEY. "
+                    "Получить новый: https://steamcommunity.com/dev/apikey",
+                    endpoint,
+                )
+                return {"_error": "invalid_api_key"}
+            if resp.status == 429:
+                log.warning("Steam API %s: 429 Too Many Requests (rate limit)", endpoint)
+                return {"_error": "rate_limited"}
             if resp.status != 200:
                 log.warning("Steam API %s returned %s", endpoint, resp.status)
                 return {}
@@ -263,6 +275,18 @@ async def check_steam_account(api_key: str, raw_input: str) -> dict:
         summaries, bans, games = await asyncio.gather(
             summaries_task, bans_task, games_task
         )
+
+        # Проверяем ошибки API (403, 429 и т.п.)
+        for r in (summaries, bans, games):
+            if isinstance(r, dict) and r.get("_error"):
+                err = r["_error"]
+                if err == "invalid_api_key":
+                    result["error"] = "invalid_api_key"
+                elif err == "rate_limited":
+                    result["error"] = "rate_limited"
+                else:
+                    result["error"] = err
+                return result
 
     result["steamid"] = sid
     result["profile_url"] = f"https://steamcommunity.com/profiles/{sid}"
