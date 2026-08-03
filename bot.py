@@ -82,30 +82,29 @@ os.makedirs("logs", exist_ok=True)
 # --- Bot instance -----------------------------------------------------------
 intents = discord.Intents.all()
 
-# Создаём кастомный HTTP-коннектор с DNS-резолвером 1.1.1.1 / 8.8.8.8.
-# Это решает проблему: в РФ WARP меняет DNS только для браузера, а Python
-# использует системный DNS, который провайдер блокирует.
-# С кастомным резолвером бот сам обращается к Cloudflare DNS напрямую.
+# Импортируем утилиты HTTP (connector будет создан позже, внутри async main()).
+# В aiohttp 3.14+ TCPConnector и ThreadedResolver требуют running event loop
+# для создания, поэтому НЕ создаём их на top-level — иначе RuntimeError.
 from utils.http import make_connector, is_custom_dns_available, get_proxy_url
 
 _proxy_url = get_proxy_url()
-_bot_connector = make_connector(force_close=False)
-log.info(
-    "HTTP-коннектор создан. Кастомный DNS: %s. Прокси: %s",
-    "включён (1.1.1.1, 8.8.8.8)" if is_custom_dns_available() else "недоступен (aiodns не установлен)",
-    _proxy_url or "не используется",
-)
+# ВАЖНО: connector НЕ создаём здесь — это упадёт в aiohttp 3.14+ (нет event loop).
+# Создадим в main() и установим в bot.http.connector ДО bot.start().
 
-# Передаём connector и proxy в Bot — discord.Client сам создаст HTTPClient.
-# Если прокси задан (HTTPS_PROXY env var), он будет использоваться для всех
-# запросов к Discord API.
 bot = commands.Bot(
     command_prefix=".",
     intents=intents,
     help_command=None,
     case_insensitive=True,
-    connector=_bot_connector,
+    # connector не указываем — discord.py создаст default, если мы не подменим
+    # bot.http.connector до вызова bot.start() (см. main()).
     proxy=_proxy_url,
+)
+
+log.info(
+    "HTTP-коннектор: будет создан в main(). Кастомный DNS доступен: %s. Прокси: %s",
+    "да (aiodns установлен, будут использованы 1.1.1.1 / 8.8.8.8)" if is_custom_dns_available() else "нет (используется системный DNS)",
+    _proxy_url or "не используется",
 )
 
 
@@ -378,6 +377,17 @@ async def main():
     else:
         log.info("python-dotenv не установлен. Используются переменные окружения "
                  "только из системы/панели хостинга.")
+
+    # Создаём кастомный HTTP-коннектор здесь — внутри async (loop уже запущен).
+    # В aiohttp 3.14+ TCPConnector требует running event loop для создания.
+    # discord.py сохраняет connector в bot.http.connector; если он MISSING —
+    # static_login() создаст default TCPConnector. Мы подменяем ДО bot.start().
+    custom_connector = make_connector(force_close=False)
+    if custom_connector is not None:
+        bot.http.connector = custom_connector
+        log.info("Кастомный HTTP-коннектор применён (DNS + прокси настроены).")
+    else:
+        log.warning("Кастомный connector не создан — будет использован default discord.py connector.")
 
     async with bot:
         for cog in INITIAL_COGS:

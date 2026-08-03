@@ -14,6 +14,7 @@ Cloudflare 1.1.1.1 и Google 8.8.8.8, минуя системный DNS.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import socket
@@ -40,7 +41,16 @@ def is_custom_dns_available() -> bool:
         return False
 
 
-def make_resolver() -> aiohttp.AbstractResolver:
+def _has_running_loop() -> bool:
+    """Проверяет, есть ли active event loop (не падает, как get_running_loop)."""
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
+def make_resolver() -> Optional[aiohttp.AbstractResolver]:
     """
     Создаёт DNS-резолвер.
     
@@ -48,7 +58,18 @@ def make_resolver() -> aiohttp.AbstractResolver:
     минуя системный DNS. Это решает проблему с DNS-блокировками в РФ.
     
     Если aiodns нет — используем системный резолвер (ThreadedResolver).
+    
+    ВАЖНО: в aiohttp 3.14+ ThreadedResolver и AsyncResolver требуют running event loop
+    для создания. Если функция вызвана вне event loop (на top-level скрипта) —
+    возвращает None, и тогда make_connector() не передаёт resolver в TCPConnector
+    (используется default).
     """
+    # aiohttp 3.14+ требует running event loop для создания resolver'а.
+    # На top-level скрипта loop ещё не запущен — возвращаем None.
+    if not _has_running_loop():
+        log.info("DNS: нет running event loop — resolver будет создан позже (default)")
+        return None
+    
     if is_custom_dns_available():
         try:
             resolver = aiohttp.AsyncResolver(
@@ -64,7 +85,12 @@ def make_resolver() -> aiohttp.AbstractResolver:
             log.warning("Не удалось создать AsyncResolver: %s — используем системный DNS", e)
     
     log.info("DNS: используем системный резолвер (aiodns не установлен)")
-    return aiohttp.ThreadedResolver()
+    try:
+        return aiohttp.ThreadedResolver()
+    except RuntimeError:
+        # На всякий случай — если loop исчез между проверкой и вызовом
+        log.warning("ThreadedResolver не создан (нет event loop) — используем default")
+        return None
 
 
 def get_proxy_url() -> Optional[str]:
@@ -94,7 +120,7 @@ def make_connector(
     *,
     resolver: Optional[aiohttp.AbstractResolver] = None,
     force_close: bool = False,
-) -> aiohttp.BaseConnector:
+) -> Optional[aiohttp.BaseConnector]:
     """
     Создаёт aiohttp-коннектор с кастомным DNS-резолвером.
     
@@ -104,20 +130,33 @@ def make_connector(
         resolver: кастомный резолвер. Если None — создаётся через make_resolver().
         force_close: принудительно закрывать соединения после каждого запроса
                      (полезно при проблемах с keep-alive через прокси).
+    
+    Returns:
+        TCPConnector или None, если нет running event loop (aiohttp 3.14+ требует
+        loop для создания TCPConnector). В этом случае вызывающий код должен
+        использовать default connector (передать None в Bot или дождаться async context).
     """
+    # aiohttp 3.14+ требует running event loop для TCPConnector.__init__.
+    # Если нет loop — возвращаем None, вызывающий код использует default.
+    if not _has_running_loop():
+        log.info("Connector: нет running event loop — возвращаем None (будет использован default)")
+        return None
+    
     if resolver is None:
         resolver = make_resolver()
     
-    connector = aiohttp.TCPConnector(
-        resolver=resolver,
-        force_close=force_close,
-        enable_cleanup_closed=True,
-        # Таймаут на установку соединения
-        ssl=False,  # Не проверять SSL — некоторые прокси ломают сертификаты
-        # Включаем IPv4 и IPv6
-        family=socket.AF_UNSPEC,
-    )
-    return connector
+    # Если resolver=None (нет loop или aiodns не установлен) — не передаём,
+    # TCPConnector создаст default ThreadedResolver сам.
+    kwargs = {
+        "force_close": force_close,
+        "enable_cleanup_closed": True,
+        "ssl": False,  # Не проверять SSL — некоторые прокси ломают сертификаты
+        "family": socket.AF_UNSPEC,
+    }
+    if resolver is not None:
+        kwargs["resolver"] = resolver
+    
+    return aiohttp.TCPConnector(**kwargs)
 
 
 def make_session(
@@ -129,15 +168,17 @@ def make_session(
     Создаёт aiohttp.ClientSession с кастомным DNS-резолвером и прокси.
     
     Используется для всех HTTP-запросов в utils/steam_api.py и других местах.
+    
+    ВАЖНО: должна вызываться внутри async context (где есть running event loop).
+    Если вызвана вне loop — aiohttp.ClientSession создаст default connector.
     """
     connector = make_connector(force_close=force_close)
     timeout_obj = aiohttp.ClientTimeout(total=timeout)
-    session = aiohttp.ClientSession(
-        connector=connector,
-        timeout=timeout_obj,
-        # Прокси берётся из env переменных автоматически (aiohttp поддерживает)
-    )
-    return session
+    # Если connector=None (нет loop) — aiohttp создаст default при первом запросе
+    kwargs = {"timeout": timeout_obj}
+    if connector is not None:
+        kwargs["connector"] = connector
+    return aiohttp.ClientSession(**kwargs)
 
 
 async def test_custom_dns() -> tuple[bool, str]:
@@ -173,7 +214,10 @@ async def test_proxy() -> tuple[bool, str]:
     try:
         connector = make_connector(force_close=True)
         timeout = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        session_kwargs = {"timeout": timeout}
+        if connector is not None:
+            session_kwargs["connector"] = connector
+        async with aiohttp.ClientSession(**session_kwargs) as session:
             async with session.get(
                 "https://discord.com/api/v10/gateway",
                 proxy=proxy_url,
