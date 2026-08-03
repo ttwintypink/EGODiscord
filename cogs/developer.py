@@ -38,9 +38,6 @@ class Developer(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # Прячем команды из help (help всё равно отключён глобально)
-        self.setup.__doc__ = None
-        self.call.__doc__ = None
 
     def _config(self) -> dict:
         return getattr(self.bot, "_config", None) or {}
@@ -48,46 +45,7 @@ class Developer(commands.Cog):
     def _is_dev(self, user: discord.abc.User) -> bool:
         return user.id == self._config().get("developer_id", 0)
 
-    # --- .setup (alias на tickets.setup, но продублирован здесь для логики dev)
-    @commands.command(name="setup", hidden=True)
-    @commands.guild_only()
-    async def setup(self, ctx: commands.Context):
-        """Установить панель тикетов (только разработчик)."""
-        if not self._is_dev(ctx.author):
-            try:
-                await ctx.message.delete()
-            except discord.HTTPException:
-                pass
-            return
-
-        config = self._config()
-        from cogs.tickets import TicketPanelView
-        from utils.embeds import build_main
-
-        embed = build_main(
-            title="🛡️ СИСТЕМА НАБОРА EGO",
-            description=config.get(
-                "ticket_panel_text",
-                "🎫 СИСТЕМА НАБОРА КЛАНА EGO\n\n"
-                "Выберите интересующую вас категорию в меню ниже...",
-            ),
-            fields=[
-                ("🛡️ Набор в клан", "Подайте заявку на вступление в клан EGO.", False),
-                ("👑 Набор в модерацию", "Подайте заявку на должность модератора.", False),
-            ],
-        )
-
-        view = TicketPanelView(config)
-        try:
-            await ctx.send(embed=embed, view=view)
-        except discord.HTTPException as e:
-            await ctx.send(embed=build_error(description=f"Ошибка: `{e}`"))
-            return
-
-        try:
-            await ctx.message.delete()
-        except discord.HTTPException:
-            pass
+    # Примечание: команда .setup определена в cogs/tickets.py — тут не дублируем.
 
     # --- .call <text> --------------------------------------------------------
     @commands.command(name="call", hidden=True)

@@ -763,51 +763,69 @@ async def _perform_close(interaction: discord.Interaction, config: dict,
 # ============================================================================
 
 class RatingView(ui.View):
-    """5 кнопок-звёздочек для оценки сервиса."""
+    """
+    5 кнопок-звёздочек для оценки сервиса.
+
+    IMPORTANT: custom_id каждой кнопки кодирует recruiter_id, чтобы
+    persistent-обработка работала через on_interaction listener
+    в TicketControl cog (после рестарта бота кнопки продолжают работать).
+
+    Формат custom_id: ego_rate_<stars>_<recruiter_id>
+    """
 
     def __init__(self, config: dict, recruiter_id: int):
         super().__init__(timeout=None)
         self.config = config
         self.recruiter_id = recruiter_id
 
-    async def _rate(self, interaction: discord.Interaction, stars: int):
+        for stars in range(1, 6):
+            btn = ui.Button(
+                label="",
+                emoji="⭐" * stars,
+                custom_id=f"ego_rate_{stars}_{recruiter_id}",
+                style=(discord.ButtonStyle.success if stars == 5
+                       else discord.ButtonStyle.secondary),
+            )
+            # Сохраняем stars в замыкании
+            btn.callback = self._make_callback(stars, recruiter_id)
+            self.add_item(btn)
+
+    def _make_callback(self, stars: int, recruiter_id: int):
+        async def callback(interaction: discord.Interaction):
+            await _handle_rating(interaction, recruiter_id, stars)
+        return callback
+
+
+async def _handle_rating(interaction: discord.Interaction, recruiter_id: int, stars: int):
+    """Обработчик нажатия на звёздочку — вызывается из View.callback ИЛИ из on_interaction listener."""
+    try:
+        await database.stats_add_rating(recruiter_id, stars)
+    except Exception as e:
+        log.warning("Не удалось записать оценку: %s", e)
+
+    # Дизаблим все кнопки в сообщении
+    view = RatingView({}, recruiter_id) if False else None  # не создаём новую View
+    try:
+        # Просто обновляем embed и убираем view (кнопки)
+        await interaction.response.edit_message(
+            view=None,
+            embed=build_success(
+                title="⭐ Спасибо за оценку!",
+                description=f"Вы оценили сервис на **{stars}** из 5 звёзд.",
+            )
+        )
+    except discord.HTTPException:
+        # Если response уже отправлен — используем followup
         try:
-            await database.stats_add_rating(self.recruiter_id, stars)
-        except Exception as e:
-            log.warning("Не удалось записать оценку: %s", e)
-        for child in self.children:
-            if isinstance(child, ui.Button):
-                child.disabled = True
-        try:
-            await interaction.response.edit_message(
-                view=self,
+            await interaction.followup.send(
                 embed=build_success(
                     title="⭐ Спасибо за оценку!",
                     description=f"Вы оценили сервис на **{stars}** из 5 звёзд.",
-                )
+                ),
+                ephemeral=True,
             )
         except discord.HTTPException:
             pass
-
-    @ui.button(label="", emoji="⭐", custom_id="ego_rate_1", style=discord.ButtonStyle.secondary)
-    async def rate_1(self, interaction: discord.Interaction, button: ui.Button):
-        await self._rate(interaction, 1)
-
-    @ui.button(label="", emoji="⭐⭐", custom_id="ego_rate_2", style=discord.ButtonStyle.secondary)
-    async def rate_2(self, interaction: discord.Interaction, button: ui.Button):
-        await self._rate(interaction, 2)
-
-    @ui.button(label="", emoji="⭐⭐⭐", custom_id="ego_rate_3", style=discord.ButtonStyle.secondary)
-    async def rate_3(self, interaction: discord.Interaction, button: ui.Button):
-        await self._rate(interaction, 3)
-
-    @ui.button(label="", emoji="⭐⭐⭐⭐", custom_id="ego_rate_4", style=discord.ButtonStyle.secondary)
-    async def rate_4(self, interaction: discord.Interaction, button: ui.Button):
-        await self._rate(interaction, 4)
-
-    @ui.button(label="", emoji="⭐⭐⭐⭐⭐", custom_id="ego_rate_5", style=discord.ButtonStyle.success)
-    async def rate_5(self, interaction: discord.Interaction, button: ui.Button):
-        await self._rate(interaction, 5)
 
 
 # ============================================================================
@@ -1047,6 +1065,35 @@ class TicketControl(commands.Cog):
             self.voice_cleanup.start()
         if not self.claim_reminder.is_running():
             self.claim_reminder.start()
+
+    # --- on_interaction: обработка persistent нажатий на звёздочки ----------
+    # Это нужно, потому что RatingView использует динамические custom_id
+    # (ego_rate_<stars>_<recruiter_id>) — обычная persistent-регистрация
+    # через bot.add_view() не работает с динамическими custom_id.
+    # Listener ловит все interaction и парсит нужные.
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        try:
+            if interaction.type != discord.InteractionType.component:
+                return
+            data = interaction.data or {}
+            custom_id = data.get("custom_id", "")
+            if not custom_id.startswith("ego_rate_"):
+                return
+            # Парсим: ego_rate_<stars>_<recruiter_id>
+            parts = custom_id.split("_")
+            if len(parts) != 4:
+                return
+            try:
+                stars = int(parts[2])
+                recruiter_id = int(parts[3])
+            except (ValueError, IndexError):
+                return
+            if stars < 1 or stars > 5:
+                return
+            await _handle_rating(interaction, recruiter_id, stars)
+        except Exception as e:
+            log.exception("Ошибка в on_interaction rating handler: %s", e)
 
     # --- on_member_remove: авто-закрытие тикета при выходе пользователя ------
     @commands.Cog.listener()

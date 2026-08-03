@@ -82,10 +82,15 @@ def _extract_profile_id(url: str) -> Optional[int]:
 def _extract_vanity_name(url_or_name: str) -> Optional[str]:
     """Возвращает vanity name из URL или из чистой строки."""
     s = url_or_name.strip().rstrip("/")
+    # Полный URL: https://steamcommunity.com/id/VANITY
     m = re.search(r"/id/([^/?#]+)", s)
     if m:
         return m.group(1)
-    # Если это просто слово без /, пробуем как vanity
+    # Короткая форма: id/VANITY
+    m = re.match(r"^id/([A-Za-z0-9_\-.]{2,32})$", s)
+    if m:
+        return m.group(1)
+    # Просто vanity имя без /
     if re.fullmatch(r"[A-Za-z0-9_\-.]{2,32}", s) and " " not in s and "." not in s:
         return s
     return None

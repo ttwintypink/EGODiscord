@@ -29,9 +29,6 @@ except ImportError:
 import database
 from cogs.ticket_control import (
     TicketControlView,
-    CloseDecisionView,
-    ConfirmCloseView,
-    RatingView,
     RestoreTicketView,
 )
 from cogs.tickets import TicketPanelView, ApplicationModal
@@ -88,11 +85,12 @@ async def on_ready():
 
     # Синхронизируем persistent views (кнопки, которые должны «жить» между
     # перезапусками бота).
+    # - TicketPanelView, TicketControlView, RestoreTicketView — регистрируем как persistent.
+    # - RatingView — НЕ регистрируем (динамический custom_id вида ego_rate_<stars>_<recruiter_id>).
+    #   Обработка идёт через on_interaction listener в TicketControl cog.
+    # - CloseDecisionView, ConfirmCloseView — временные (timeout), не persistent.
     bot.add_view(TicketPanelView(CONFIG))
     bot.add_view(TicketControlView(CONFIG))
-    bot.add_view(CloseDecisionView(CONFIG))
-    bot.add_view(ConfirmCloseView(CONFIG))
-    bot.add_view(RatingView(CONFIG))
     bot.add_view(RestoreTicketView(CONFIG))
 
     # Запускаем фоновые задачи (если ещё не запущены)
