@@ -4,4 +4,5 @@ aiosqlite>=0.19.0
 python-dotenv>=1.0.0
 PyNaCl>=1.5.0
 aiodns>=3.0.0
+aiohttp-socks>=0.8.0
 beautifulsoup4>=4.12.0

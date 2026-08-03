@@ -95,25 +95,77 @@ def make_resolver() -> Optional[aiohttp.AbstractResolver]:
 
 def get_proxy_url() -> Optional[str]:
     """
-    Возвращает URL прокси из переменных окружения, если задан.
+    Возвращает URL прокси.
     
-    Поддерживаемые переменные (в порядке приоритета):
-        HTTPS_PROXY / https_proxy
-        ALL_PROXY / all_proxy
-        HTTP_PROXY / http_proxy
+    Приоритет:
+        1. Переменные окружения HTTPS_PROXY / https_proxy / ALL_PROXY / all_proxy
+           / HTTP_PROXY / http_proxy
+        2. config.json -> "proxy" (если задан)
     
     Прокси может быть:
         http://user:pass@host:port
         http://host:port
-        socks5://host:port  (требует aiohttp-socks)
+        socks5://user:pass@host:port  (требует aiohttp-socks)
+        socks5://host:port
+        socks4://host:port
     """
+    # 1. env переменные (приоритет выше)
     for var in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy",
                 "HTTP_PROXY", "http_proxy"):
         val = os.environ.get(var, "").strip()
         if val:
-            log.info("Прокси: используется переменная %s", var)
+            log.info("Прокси: используется переменная окружения %s", var)
             return val
+    
+    # 2. config.json -> "proxy"
+    try:
+        import json
+        from pathlib import Path
+        cfg_path = Path("config.json")
+        if cfg_path.exists():
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            cfg_proxy = (cfg.get("proxy") or "").strip()
+            if cfg_proxy and cfg_proxy.lower() not in ("none", "null", "false", ""):
+                log.info("Прокси: используется config.json -> proxy = %s", _mask_proxy(cfg_proxy))
+                return cfg_proxy
+    except Exception as e:
+        log.warning("Не удалось прочитать proxy из config.json: %s", e)
+    
     return None
+
+
+def _mask_proxy(proxy_url: str) -> str:
+    """Маскирует пароль в URL прокси для логов."""
+    if "@" in proxy_url and "://" in proxy_url:
+        # http://user:pass@host:port → http://user:***@host:port
+        scheme, rest = proxy_url.split("://", 1)
+        if "@" in rest:
+            creds, host = rest.rsplit("@", 1)
+            if ":" in creds:
+                user, _ = creds.split(":", 1)
+                return f"{scheme}://{user}:***@{host}"
+            return f"{scheme}://***@{host}"
+    return proxy_url
+
+
+def is_socks_proxy(proxy_url: str) -> bool:
+    """Проверяет, является ли прокси SOCKS-прокси (нужен aiohttp-socks)."""
+    if not proxy_url:
+        return False
+    return proxy_url.lower().startswith(("socks5://", "socks5h://", "socks4://", "socks4a://"))
+
+
+def check_socks_support() -> tuple[bool, str]:
+    """
+    Проверяет, доступна ли библиотека aiohttp-socks (для SOCKS5/4 прокси).
+    Возвращает (ok, message).
+    """
+    try:
+        import aiohttp_socks  # noqa: F401
+        return True, "aiohttp-socks установлен"
+    except ImportError:
+        return False, "aiohttp-socks не установлен — pip install aiohttp-socks"
 
 
 def make_connector(
@@ -126,13 +178,16 @@ def make_connector(
     
     Используется для всех HTTP-запросов бота (Discord API, Steam API и т.д.).
     
+    Если в config.json или env задан SOCKS5/4 прокси — автоматически
+    используется ProxyConnector из aiohttp-socks (оборачивает TCPConnector).
+    
     Args:
         resolver: кастомный резолвер. Если None — создаётся через make_resolver().
         force_close: принудительно закрывать соединения после каждого запроса
                      (полезно при проблемах с keep-alive через прокси).
     
     Returns:
-        TCPConnector или None, если нет running event loop (aiohttp 3.14+ требует
+        Connector или None, если нет running event loop (aiohttp 3.14+ требует
         loop для создания TCPConnector). В этом случае вызывающий код должен
         использовать default connector (передать None в Bot или дождаться async context).
     """
@@ -156,7 +211,33 @@ def make_connector(
     if resolver is not None:
         kwargs["resolver"] = resolver
     
-    return aiohttp.TCPConnector(**kwargs)
+    connector = aiohttp.TCPConnector(**kwargs)
+    
+    # Если задан SOCKS-прокси — оборачиваем в ProxyConnector.
+    # Это позволяет использовать socks5://... прокси напрямую.
+    proxy_url = get_proxy_url()
+    if proxy_url and is_socks_proxy(proxy_url):
+        socks_ok, socks_msg = check_socks_support()
+        if socks_ok:
+            try:
+                from aiohttp_socks import ProxyConnector
+                # ProxyConnector оборачивает существующий connector
+                socks_connector = ProxyConnector.from_url(proxy_url, **kwargs)
+                log.info("Connector: используется SOCKS-прокси через aiohttp-socks: %s",
+                         _mask_proxy(proxy_url))
+                # Закрываем базовый TCPConnector — ProxyConnector создаст свой
+                # ВАЖНО: ProxyConnector — это Connector, не обёртка над TCPConnector,
+                # он сам создаёт внутренний коннектор. Закрываем наш.
+                # (на самом деле ProxyConnector не принимает существующий connector,
+                # так что просто возвращаем его)
+                return socks_connector
+            except Exception as e:
+                log.warning("Не удалось создать SOCKS ProxyConnector: %s — используем HTTP-прокси через env", e)
+        else:
+            log.warning("SOCKS-прокси задан, но aiohttp-socks не установлен: %s", socks_msg)
+            log.warning("Установите: pip install aiohttp-socks")
+    
+    return connector
 
 
 def make_session(

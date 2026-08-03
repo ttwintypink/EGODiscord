@@ -28,6 +28,14 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+# Загружаем .env ЧЕРЕЗ python-dotenv — иначе DISCORD_TOKEN не виден в diagnose.py
+# (bot.py тоже загружает .env через load_dotenv, здесь делаем так же)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv не установлен — переменные только из системы
+
 # Цветной вывод (работает на Windows 10+)
 if platform.system() == "Windows":
     os.system("")  # активируем ANSI-обработку в cmd.exe
@@ -146,6 +154,7 @@ def check_dependencies():
         ("aiosqlite", "aiosqlite"),
         ("dotenv", "python-dotenv"),
         ("aiodns", "aiodns  ⚠️ КРИТИЧНО для РФ — без него DNS не обойдёт блокировку"),
+        ("aiohttp_socks", "aiohttp-socks  (нужен только для SOCKS5 прокси)"),
     ]
     
     for mod_name, pip_name in deps:
@@ -154,7 +163,14 @@ def check_dependencies():
             version = getattr(mod, "__version__", "неизвестно")
             ok(f"{pip_name} {version}")
         except ImportError:
-            fail(f"{pip_name} не установлен — запустите: pip install {mod_name}")
+            if "aiodns" in pip_name:
+                fail(f"{pip_name} не установлен — запустите: pip install {mod_name}")
+                warn("Без aiodns бот не сможет обойти DNS-блокировки в РФ")
+            elif "aiohttp_socks" in pip_name:
+                info(f"{pip_name} не установлен (нужен только для SOCKS5 прокси)")
+                info("  Установить: pip install aiohttp-socks")
+            else:
+                fail(f"{pip_name} не установлен — запустите: pip install {mod_name}")
     
     # Опциональная: bs4
     try:
@@ -318,16 +334,36 @@ async def check_proxy():
     header("6. Прокси (если задан)")
     
     try:
-        from utils.http import test_proxy, get_proxy_url
+        from utils.http import (test_proxy, get_proxy_url, is_socks_proxy,
+                                  check_socks_support, _mask_proxy)
         proxy_url = get_proxy_url()
         if not proxy_url:
-            info("Прокси не задан (нет env переменных HTTP_PROXY/HTTPS_PROXY/ALL_PROXY)")
-            info("Если Discord недоступен — попробуйте задать прокси:")
-            info("  set HTTPS_PROXY=http://127.0.0.1:8080")
-            info("  set HTTP_PROXY=http://127.0.0.1:8080")
-            info("  python bot.py")
+            info("Прокси не задан")
+            info("Способы задать прокси:")
+            info("  Способ 1: config.json → поле \"proxy\"")
+            info("    \"proxy\": \"socks5://user:pass@host:port\"")
+            info("    \"proxy\": \"http://host:port\"")
+            info("  Способ 2: переменные окружения")
+            info("    set HTTPS_PROXY=http://127.0.0.1:8080")
+            info("    set HTTP_PROXY=http://127.0.0.1:8080")
+            info("    python bot.py")
+            info("  Способ 3: ALL_PROXY для SOCKS5")
+            info("    set ALL_PROXY=socks5://127.0.0.1:1080")
+            info("    (требуется: pip install aiohttp-socks)")
             return True
-        ok(f"Прокси задан: {proxy_url}")
+        
+        ok(f"Прокси задан: {_mask_proxy(proxy_url)}")
+        
+        # Если SOCKS — проверяем что есть aiohttp-socks
+        if is_socks_proxy(proxy_url):
+            socks_ok, socks_msg = check_socks_support()
+            if socks_ok:
+                ok(f"SOCKS-поддержка: {socks_msg}")
+            else:
+                fail(f"SOCKS-поддержка: {socks_msg}")
+                warn("Установите: pip install aiohttp-socks")
+                return False
+        
         proxy_ok, proxy_detail = await test_proxy()
         if proxy_ok:
             ok(f"Прокси работает: {proxy_detail}")
@@ -444,26 +480,32 @@ async def main():
         print()
         print(f"  {BOLD}Что делать:{RESET}")
         print()
-        print(f"  {CYAN}1. WARP (Cloudflare):{RESET}")
-        print(f"     • Открой WARP → Settings → Advanced")
-        print(f"     • Включи режим WARP (не только 1.1.1.1 DNS)")
+        print(f"  {CYAN}1. Cloudflare WARP в режиме WARP (не 1.1.1.1 only):{RESET}")
+        print(f"     • Открой WARP → Settings → Advanced → Connection options")
+        print(f"     • Выбери режим WARP (не 1.1.1.1 only)")
         print(f"     • Перезапусти WARP и попробуй снова")
         print()
-        print(f"  {CYAN}2. Системный VPN:{RESET}")
-        print(f"     • Установи Outline, Amnezia, Wireguard, OpenVPN")
+        print(f"  {CYAN}2. Системный VPN (Outline / Amnezia / Wireguard):{RESET}")
+        print(f"     • Установи VPN-клиент с туннелированием трафика")
         print(f"     • Включи VPN — весь трафик пойдёт через него")
         print(f"     • Браузер и Python будут работать одинаково")
         print()
-        print(f"  {CYAN}3. Proxy (если ничего не помогает):{RESET}")
-        print(f"     • Установи HTTP/SOCKS5 proxy")
-        print(f"     • Задай переменные окружения:")
-        print(f"         set HTTP_PROXY=http://127.0.0.1:8080")
-        print(f"         set HTTPS_PROXY=http://127.0.0.1:8080")
-        print(f"     • aiohttp будет использовать proxy автоматически")
+        print(f"  {CYAN}3. HTTP/SOCKS5 прокси через config.json (САМЫЙ ПРОСТОЙ ВАРИАНТ):{RESET}")
+        print(f"     • Открой config.json в блокноте")
+        print(f"     • Добавь поле \"proxy\":")
+        print(f'         "proxy": "http://host:port"')
+        print(f'         "proxy": "socks5://user:pass@host:port"')
+        print(f"     • Для SOCKS5 установи: pip install aiohttp-socks")
+        print(f"     • Бот автоматически подхватит прокси")
         print()
-        print(f"  {CYAN}4. Проверь антивирус:{RESET}")
-        print(f"     • Добавь python.exe в исключения")
-        print(f"     • Отключи временно Windows Defender Firewall")
+        print(f"  {CYAN}4. Прокси через переменные окружения:{RESET}")
+        print(f"     • set HTTPS_PROXY=http://127.0.0.1:8080")
+        print(f"     • set HTTP_PROXY=http://127.0.0.1:8080")
+        print(f"     • python bot.py")
+        print()
+        print(f"  {CYAN}5. Проверь антивирус:{RESET}")
+        print(f"     • Добавь python.exe в исключения Windows Defender")
+        print(f"     • Отключи временно Firewall")
         print()
         print(f"  После настройки сети запусти 'python diagnose.py' снова.")
     
