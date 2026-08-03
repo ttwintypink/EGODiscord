@@ -130,72 +130,18 @@ async def on_command_error(ctx: commands.Context, error: Exception):
     # CommandNotFound — пользователь написал несуществующую команду.
     # Не логируем как ERROR (мусор), просто игнорируем.
     if isinstance(error, commands.CommandNotFound):
-        # Подсказка, если похоже на опечатку или попытку .help
-        invoked = ctx.invoked_with.lower() if ctx.invoked_with else ""
-        if invoked in ("help", "h", "?", "команды", "помощь"):
-            embed = discord.Embed(
-                title="📋 Команды EGO System",
-                description=(
-                    "## 🛡️ EGODiscord System — справка\n\n"
-                    f"Префикс команд: **`.`**\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                ),
-                color=0x5865F2,
-                timestamp=discord.utils.utcnow(),
-            )
-            embed.add_field(
-                name="🎫 Тикеты",
-                value=(
-                    "`.setup` — установить панель тикетов "
-                    "*(только разработчик)*"
-                ),
-                inline=False,
-            )
-            embed.add_field(
-                name="⚙️ Настройка бота",
-                value=(
-                    "`.editor` — **интерактивный дашборд** всех настроек "
-                    "(вопросы, текст панели, Steam-ключ, роли, каналы)\n"
-                    "`.setup-voprosy` — быстро изменить вопросы анкеты "
-                    "*(админы)*"
-                ),
-                inline=False,
-            )
-            embed.add_field(
-                name="🚫 Модерация",
-                value=(
-                    "`.blacklist add @user` — добавить в ЧС\n"
-                    "`.blacklist remove @user` — убрать из ЧС\n"
-                    "`.blacklist list` — список ЧС\n"
-                    "`.stats` — ТОП рекрутеров"
-                ),
-                inline=False,
-            )
-            embed.add_field(
-                name="📞 Для разработчика (внутри тикета)",
-                value=(
-                    "`.call <текст>` — написать кандидату в ЛС\n"
-                    "`.voice` — создать голосовой канал обзвона"
-                ),
-                inline=False,
-            )
-            embed.set_footer(text="EGODiscord System • .help")
-            try:
-                await ctx.send(embed=embed)
-            except discord.HTTPException:
-                pass
         return
 
     if isinstance(error, commands.MissingRequiredArgument):
         try:
-            await ctx.send(
-                embed=discord.Embed(
-                    title="⚠️ Недостаточно аргументов",
-                    description=f"Команда `.{ctx.command}` требует аргументы.\n"
-                                f"Использование: `.{ctx.command} {ctx.command.signature}`",
-                    color=0xFEE75C,
-                ).set_footer(text="EGODiscord System"),
+            embed = discord.Embed(
+                title="⚠️ Недостаточно аргументов",
+                description=f"Команда `.{ctx.command}` требует аргументы.\n"
+                            f"Использование: `.{ctx.command} {ctx.command.signature}`",
+                color=0xFEE75C,
             )
+            embed.set_footer(text="EGODiscord System")
+            await ctx.send(embed=embed)
         except discord.HTTPException:
             pass
         return
@@ -207,14 +153,14 @@ async def on_command_error(ctx: commands.Context, error: Exception):
     # Прочие ошибки — логируем
     log.exception("Ошибка в команде %s: %s", ctx.command, error)
     try:
-        await ctx.send(
-            embed=discord.Embed(
-                title="❌ Ошибка",
-                description=f"Произошла ошибка при выполнении команды.\n"
-                            f"```\n{type(error).__name__}: {error}\n```",
-                color=0xED4245,
-            ).set_footer(text="EGODiscord System"),
+        embed = discord.Embed(
+            title="❌ Ошибка",
+            description=f"Произошла ошибка при выполнении команды.\n"
+                        f"```\n{type(error).__name__}: {error}\n```",
+            color=0xED4245,
         )
+        embed.set_footer(text="EGODiscord System")
+        await ctx.send(embed=embed)
     except discord.HTTPException:
         pass
 
@@ -226,6 +172,7 @@ INITIAL_COGS = [
     "cogs.moderation",
     "cogs.developer",
     "cogs.editor",
+    "cogs.help",
 ]
 
 

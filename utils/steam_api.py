@@ -33,7 +33,14 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import aiohttp
-from bs4 import BeautifulSoup  # type: ignore
+
+# BeautifulSoup был нужен для HTML-парсинга профиля Steam (fallback-режим без API-ключа).
+# Сейчас бот работает только через Steam Web API, поэтому bs4 не обязателен.
+# Импортируем опционально — если библиотека установлена, можно использовать в будущем.
+try:  # pragma: no cover
+    from bs4 import BeautifulSoup  # type: ignore
+except ImportError:  # pragma: no cover
+    BeautifulSoup = None  # type: ignore[assignment]
 
 log = logging.getLogger(__name__)
 
