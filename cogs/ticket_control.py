@@ -28,7 +28,7 @@ from utils import embeds
 from utils.embeds import (
     build_main, build_success, build_error, build_warning, build_info,
     msk_timestamp, now_msk, MSK,
-    COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, COLOR_MAIN,
+    COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, COLOR_MAIN, COLOR_PIRATE,
 )
 from utils.transcripts import generate_html_transcript, save_html, save_form_txt
 
@@ -118,6 +118,8 @@ def build_control_embed(
     claimer: Optional[discord.abc.User] = None,
     voice_channel: Optional[discord.VoiceChannel] = None,
     steam_status: str = "pending",
+    is_pirate: bool = False,
+    pirate_evidence: Optional[list[str]] = None,
 ) -> discord.Embed:
     """Собирает единый embed управления тикетом.
 
@@ -126,6 +128,8 @@ def build_control_embed(
 
     status: 'open' | 'claimed' | 'accepted' | 'rejected'
     steam_status: 'pending' | 'checking' | 'done' | 'failed'
+    is_pirate: если True — в шапку добавляется оранжевый бейдж пиратки (Spacewar)
+    pirate_evidence: список строк-признаков пиратки (показывается отдельным полем)
     """
     is_clan = ticket_type == "clan"
     type_emoji = "🛡️" if is_clan else "👑"
@@ -153,8 +157,18 @@ def build_control_embed(
         status_color = COLOR_MAIN
         title = f"{type_emoji} Тикет"
 
+    # Пиратка в заголовке: добавляем явный маркер в title и бейдж в description.
+    # Бан важнее пиратки — но пиратка тоже подсвечивается оранжевым.
+    pirate_badge = ""
+    if is_pirate:
+        pirate_badge = " 🏴‍☠️ ПИРАТ"
+        # Если тикет ещё открыт/в работе — оранжевый цвет приоритетнее зелёного/жёлтого
+        if status in ("open", "claimed"):
+            status_color = COLOR_PIRATE
+        title = f"{type_emoji} Тикет — ПИРАТ! 🏴‍☠️" if status in ("open", "claimed") else title
+
     description_parts = [
-        f"## 👋 {user.mention}",
+        f"## 👋 {user.mention}{pirate_badge}",
         f"",
         f"**Тип заявки:** {type_emoji} {type_label}",
         f"**Статус:** {status_text}",
@@ -177,6 +191,12 @@ def build_control_embed(
     }
     description_parts.append(f"**Steam:** {steam_emojis.get(steam_status, '—')}")
 
+    # Пиратка — отдельный маркер в шапке (всегда виден модератору)
+    if is_pirate:
+        description_parts.append("**Пиратка:** 🏴‍☠️ Spacewar вместо Rust")
+    elif steam_status == "done":
+        description_parts.append("**Пиратка:** ✅ Не обнаружена")
+
     description_parts.extend([
         f"",
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
@@ -192,6 +212,18 @@ def build_control_embed(
         description_parts.append("🎙️ **Обзвон** — создать голосовой канал")
         description_parts.append("🔇 **Заглушить** — мут в голосовом")
         description_parts.append("🔒 **Закрыть** — принять/отклонить заявку")
+
+    # Предупреждение о пиратке — выделенный блок под шапкой
+    if is_pirate:
+        description_parts.extend([
+            f"",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"### 🏴‍☠️ Внимание: пиратка!",
+            f"Кандидат играет через **Spacewar** (тестовое приложение Steam, "
+            f"которое пираты используют для запуска Rust без лицензии).",
+            f"⚠️ **Принимать с жёстким ограничением** — на усмотрение лидерства, "
+            f"после дополнительной проверки.",
+        ])
 
     embed = discord.Embed(
         title=title,
@@ -209,6 +241,21 @@ def build_control_embed(
         value=msk_timestamp(),
         inline=True,
     )
+
+    # Поле «Пиратка» — отдельной строкой под шапкой
+    if is_pirate:
+        pirate_value = "🏴‍☠️ **Обнаружена пиратская версия Rust**\n"
+        if pirate_evidence:
+            evidence_text = "\n".join(f"• {e}" for e in pirate_evidence[:5])
+            if len(evidence_text) > 800:
+                evidence_text = evidence_text[:800] + "\n…(обрезано)"
+            pirate_value += evidence_text
+        embed.add_field(
+            name="🏴‍☠️ Пиратка (Spacewar)",
+            value=pirate_value[:1024],
+            inline=False,
+        )
+
     embed.set_thumbnail(url=user.display_avatar.url)
     embed.set_footer(text="EGODiscord System • Управление тикетом")
     return embed
@@ -326,6 +373,7 @@ async def _handle_claim(interaction: discord.Interaction, config: dict,
 
     # КОМПАКТНО: редактируем существующее embed управления (без отправки нового)
     new_view = TicketControlViewClaimed(config, interaction.user)
+    _is_pirate, _pirate_ev = database.parse_pirate_info(ticket)
     new_embed = build_control_embed(
         user=candidate or interaction.user,
         ticket_type=ticket["type"],
@@ -334,6 +382,8 @@ async def _handle_claim(interaction: discord.Interaction, config: dict,
         voice_channel=guild.get_channel(ticket.get("voice_channel_id") or 0)
             if ticket.get("voice_channel_id") else None,
         steam_status="done",  # Steam уже проверен к моменту claim
+        is_pirate=_is_pirate,
+        pirate_evidence=_pirate_ev,
     )
     try:
         await interaction.response.edit_message(embed=new_embed, view=new_view)
@@ -459,6 +509,7 @@ async def _create_voice_channel(interaction: discord.Interaction,
     else:
         new_view = TicketControlView(config)
 
+    _is_pirate, _pirate_ev = database.parse_pirate_info(ticket)
     new_embed = build_control_embed(
         user=user or interaction.user,
         ticket_type=ticket["type"],
@@ -466,6 +517,8 @@ async def _create_voice_channel(interaction: discord.Interaction,
         claimer=claimer,
         voice_channel=vc,
         steam_status="done",
+        is_pirate=_is_pirate,
+        pirate_evidence=_pirate_ev,
     )
 
     try:
@@ -744,6 +797,9 @@ async def _perform_close(interaction: discord.Interaction, config: dict,
     user_id = ticket["user_id"]
     user = guild.get_member(user_id)
 
+    # Достаём информацию о пиратке из БД — добавим её в DM, log и transcript
+    is_pirate, pirate_evidence = database.parse_pirate_info(ticket)
+
     # 1. Меняем эмодзи канала
     await _set_channel_emoji(channel, EMOJI_ACCEPTED if decision == "accepted" else EMOJI_REJECTED)
 
@@ -788,6 +844,12 @@ async def _perform_close(interaction: discord.Interaction, config: dict,
             await database.stats_add_ticket(closer.id, reaction_time)
         except Exception as e:
             log.warning("Не удалось обновить статистику: %s", e)
+        # Если закрыт тикет с пираткой — плюсуем в счётчик пойманных пиратов
+        if is_pirate:
+            try:
+                await database.stats_add_pirate(closer.id)
+            except Exception as e:
+                log.warning("Не удалось обновить pirate_count: %s", e)
 
     # 4. Обновляем статус тикета
     await database.ticket_set_status(channel.id, decision)
@@ -813,13 +875,23 @@ async def _perform_close(interaction: discord.Interaction, config: dict,
             status_emoji = "✅ Принят" if accepted else "❌ Отклонён"
             color = COLOR_SUCCESS if accepted else COLOR_ERROR
 
+            # Если у кандидата пиратка — подсвечиваем это в заголовке DM
+            pirate_title_suffix = " 🏴‍☠️" if is_pirate else ""
+            dm_description = (
+                f"## 👋 Здравствуйте, {user.mention}!\n\n"
+                f"Ваша заявка была **{status_emoji.lower()}**.\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            if is_pirate:
+                dm_description += (
+                    f"\n\n🏴‍☠️ **Внимание:** при проверке Steam-аккаунта "
+                    f"обнаружена пиратская версия Rust (Spacewar вместо "
+                    f"лицензии). Это учтено при решении по вашей заявке."
+                )
+
             dm_embed = discord.Embed(
-                title=f"🎫 Ваша заявка EGO — {status_emoji}",
-                description=(
-                    f"## 👋 Здравствуйте, {user.mention}!\n\n"
-                    f"Ваша заявка была **{status_emoji.lower()}**.\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                ),
+                title=f"🎫 Ваша заявка EGO — {status_emoji}{pirate_title_suffix}",
+                description=dm_description,
                 color=color,
                 timestamp=now_msk(),
             )
@@ -833,6 +905,19 @@ async def _perform_close(interaction: discord.Interaction, config: dict,
                 value=reason[:1024],
                 inline=False,
             )
+            # Поле «Пиратка» — отдельной строкой, чтобы кандидат видел причину
+            if is_pirate:
+                pirate_value = "🏴‍☠️ Обнаружена пиратская версия Rust (Spacewar)"
+                if pirate_evidence:
+                    evidence_text = "\n".join(f"• {e}" for e in pirate_evidence[:3])
+                    if len(evidence_text) > 700:
+                        evidence_text = evidence_text[:700] + "\n…(обрезано)"
+                    pirate_value += f"\n{evidence_text}"
+                dm_embed.add_field(
+                    name="🏴‍☠️ Пиратка (Spacewar)",
+                    value=pirate_value[:1024],
+                    inline=False,
+                )
             dm_embed.add_field(
                 name="💬 Последние сообщения из тикета",
                 value=last_msgs_text[:1024] if last_msgs_text else "—",
@@ -927,6 +1012,8 @@ async def _perform_close(interaction: discord.Interaction, config: dict,
             created_at=created_dt,
             closed_at=now_msk(),
             messages=messages_for_html,
+            is_pirate=is_pirate,
+            pirate_evidence=pirate_evidence,
         )
         html_path = save_html(html_content, channel.id, user_name)
     except Exception as e:
@@ -949,12 +1036,21 @@ async def _perform_close(interaction: discord.Interaction, config: dict,
         status_text = "✅ Принят" if accepted else "❌ Отклонён"
         color = COLOR_SUCCESS if accepted else COLOR_ERROR
 
+        # Пиратка — отдельный суффикс в заголовке лога
+        pirate_suffix = " 🏴‍☠️ ПИРАТ" if is_pirate else ""
+        log_description = (
+            f"## {status_text}{pirate_suffix}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        if is_pirate:
+            log_description += (
+                "\n🏴‍☠️ **У кандидата обнаружена пиратская версия Rust** "
+                "(Spacewar вместо лицензии)."
+            )
+
         log_embed = discord.Embed(
-            title=f"📜 Тикет закрыт — {status_text}",
-            description=(
-                f"## {status_text}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            ),
+            title=f"📜 Тикет закрыт — {status_text}{pirate_suffix}",
+            description=log_description,
             color=color,
             timestamp=now_msk(),
         )
@@ -978,6 +1074,19 @@ async def _perform_close(interaction: discord.Interaction, config: dict,
             value=reason[:1024],
             inline=False,
         )
+        # Поле «Пиратка» — в логе это важно для статистики и модерации
+        if is_pirate:
+            pirate_value = "🏴‍☠️ Spacewar вместо купленной Rust"
+            if pirate_evidence:
+                evidence_text = "\n".join(f"• {e}" for e in pirate_evidence[:5])
+                if len(evidence_text) > 800:
+                    evidence_text = evidence_text[:800] + "\n…(обрезано)"
+                pirate_value += f"\n{evidence_text}"
+            log_embed.add_field(
+                name="🏴‍☠️ Пиратка (Spacewar)",
+                value=pirate_value[:1024],
+                inline=False,
+            )
         log_embed.add_field(
             name="⏱️ Время",
             value=msk_timestamp(),
@@ -1202,6 +1311,8 @@ async def _restore_ticket(interaction: discord.Interaction, config: dict):
     user_id = None
     user_name = "restored"
     ticket_type = "clan"
+    is_pirate_restored = False
+    pirate_evidence_restored: list[str] = []
     if html_content:
         import re
         m = re.search(r"\((\d{10,20})\)", html_content)
@@ -1215,6 +1326,22 @@ async def _restore_ticket(interaction: discord.Interaction, config: dict):
             user_name = m_name.group(1).strip()
         if "Модерация" in html_content:
             ticket_type = "mod"
+        # Детект пиратки: ищем баннер пиратки в HTML транскрипта
+        if "pirate-banner" in html_content or "badge-pirate" in html_content \
+                or "Spacewar" in html_content:
+            is_pirate_restored = True
+            # Достаём пункты evidence из <ul class="pirate-evidence"><li>...</li></ul>
+            ev_matches = re.findall(
+                r'<ul class="pirate-evidence">(.*?)</ul>',
+                html_content, re.DOTALL
+            )
+            for ev_block in ev_matches:
+                li_matches = re.findall(r"<li>(.*?)</li>", ev_block, re.DOTALL)
+                for li in li_matches:
+                    # Убираем HTML-теги внутри
+                    clean = re.sub(r"<[^>]+>", "", li).strip()
+                    if clean:
+                        pirate_evidence_restored.append(clean)
 
     if user_id is None:
         await interaction.followup.send(
@@ -1279,14 +1406,32 @@ async def _restore_ticket(interaction: discord.Interaction, config: dict):
     form_text = txt_content or "Анкета восстановлена из логов."
     await database.ticket_create(new_channel.id, user_id, ticket_type, form_text)
 
+    # Если в транскрипте была пиратка — сохраняем её в новый тикет, чтобы
+    # она была видна во всех панелях восстановленного тикета.
+    if is_pirate_restored:
+        try:
+            await database.ticket_set_steam_info(
+                new_channel.id, True, pirate_evidence_restored
+            )
+        except Exception as e:
+            log.warning("Не удалось сохранить pirate info при restore: %s", e)
+
     # Премиум-embed восстановления
+    pirate_suffix = " 🏴‍☠️ ПИРАТ" if is_pirate_restored else ""
+    restore_description = (
+        f"## 🔄 Этот тикет был восстановлен из логов\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    if is_pirate_restored:
+        restore_description += (
+            "\n\n🏴‍☠️ **Внимание:** у кандидата обнаружена пиратская "
+            "версия Rust (Spacewar вместо лицензии) — будьте внимательны."
+        )
+    restore_color = COLOR_PIRATE if is_pirate_restored else COLOR_MAIN
     restore_embed = discord.Embed(
-        title="♻️ Тикет восстановлен",
-        description=(
-            f"## 🔄 Этот тикет был восстановлен из логов\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        ),
-        color=COLOR_MAIN,
+        title=f"♻️ Тикет восстановлен{pirate_suffix}",
+        description=restore_description,
+        color=restore_color,
         timestamp=now_msk(),
     )
     restore_embed.add_field(
@@ -1304,6 +1449,19 @@ async def _restore_ticket(interaction: discord.Interaction, config: dict):
         value=interaction.user.mention,
         inline=True,
     )
+    # Поле «Пиратка» — в восстановленном тикете тоже должно быть видно
+    if is_pirate_restored:
+        pirate_value = "🏴‍☠️ Spacewar вместо купленной Rust"
+        if pirate_evidence_restored:
+            evidence_text = "\n".join(f"• {e}" for e in pirate_evidence_restored[:5])
+            if len(evidence_text) > 800:
+                evidence_text = evidence_text[:800] + "\n…(обрезано)"
+            pirate_value += f"\n{evidence_text}"
+        restore_embed.add_field(
+            name="🏴‍☠️ Пиратка (Spacewar)",
+            value=pirate_value[:1024],
+            inline=False,
+        )
     restore_embed.add_field(
         name="⏱️ Время",
         value=msk_timestamp(),

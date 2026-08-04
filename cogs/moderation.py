@@ -222,6 +222,14 @@ class Moderation(commands.Cog):
         total_ratings = sum(r["ratings_count"] for r in top)
         all_stars = sum(r["total_stars"] for r in top)
         avg_all = (all_stars / total_ratings) if total_ratings else 0
+        # Совокупный счётчик пойманных пиратов по всем рекрутерам
+        total_pirates = sum(int(r.get("pirate_count") or 0) for r in top)
+
+        # Сколько сейчас открытых тикетов с пираткой (в пайплайне)
+        try:
+            active_pirates = await database.pirates_active_count()
+        except Exception:
+            active_pirates = 0
 
         # Текстовое описание лидерборда
         lines = []
@@ -232,6 +240,7 @@ class Moderation(commands.Cog):
             total_stars = row["total_stars"]
             ratings_count = row["ratings_count"]
             total_reaction_time = row["total_reaction_time"]
+            pirate_count = int(row.get("pirate_count") or 0)
 
             avg_rating = (total_stars / ratings_count) if ratings_count else 0
             avg_reaction = (total_reaction_time / ticket_count) if ticket_count else 0
@@ -247,10 +256,16 @@ class Moderation(commands.Cog):
             stars_str = "⭐" * round(avg_rating) if avg_rating else "—"
             medal = medals[i] if i < len(medals) else f"**{i+1}.**"
 
+            pirate_line = (
+                f"   ┣ 🏴‍☠️ Пиратов поймано: **{pirate_count}**\n"
+                if pirate_count > 0 else ""
+            )
+
             lines.append(
                 f"{medal} <@{recruiter_id}> `{recruiter_id}`\n"
                 f"   ┣ 📋 Тикетов: **{ticket_count}**\n"
                 f"   ┣ ⭐ Оценка: **{avg_rating:.1f}/5** {stars_str} ({ratings_count} оценок)\n"
+                f"{pirate_line}"
                 f"   ┗ ⚡ Реакция: **{reaction_str}**"
             )
 
@@ -262,6 +277,8 @@ class Moderation(commands.Cog):
                 f"📈 **Всего тикетов закрыто:** {total_tickets}\n"
                 f"⭐ **Средняя оценка клана:** {avg_all:.1f}/5\n"
                 f"👥 **Активных рекрутеров:** {len(top)}\n"
+                f"🏴‍☠️ **Пиратов поймано всего:** {total_pirates}\n"
+                f"🔴 **Пиратов сейчас в пайплайне:** {active_pirates}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 + "\n\n".join(lines)
             ),

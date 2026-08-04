@@ -5,7 +5,8 @@ database.py — Асинхронная работа с SQLite для EGODiscord.
     - blacklist(user_id, added_by, added_at, reason)
     - active_tickets(channel_id, user_id, type, created_at, claimed_at,
                      claimed_by, status, voice_channel_id, transcript_path,
-                     form_text, last_message_at, warned_inactive)
+                     form_text, last_message_at, warned_inactive,
+                     original_nickname, is_pirate, pirate_evidence)
     - stats(recruiter_id UNIQUE, ticket_count, total_stars, ratings_count,
             total_reaction_time, last_activity)
     - ticket_messages(id, channel_id, author_id, author_name, content,
@@ -82,12 +83,34 @@ async def init_db() -> None:
         await db.commit()
 
         # --- Миграции (добавляем колонки, если их нет) ---
-        # Проверяем наличие колонки original_nickname
+        # Проверяем наличие колонок и добавляем недостающие.
         async with db.execute("PRAGMA table_info(active_tickets)") as cur:
             columns = [row[1] for row in await cur.fetchall()]
         if "original_nickname" not in columns:
             await db.execute(
                 "ALTER TABLE active_tickets ADD COLUMN original_nickname TEXT"
+            )
+            await db.commit()
+        # Повторно читаем список колонок (после возможного ALTER выше).
+        async with db.execute("PRAGMA table_info(active_tickets)") as cur:
+            columns = [row[1] for row in await cur.fetchall()]
+        if "is_pirate" not in columns:
+            await db.execute(
+                "ALTER TABLE active_tickets ADD COLUMN is_pirate INTEGER DEFAULT 0"
+            )
+            await db.commit()
+        if "pirate_evidence" not in columns:
+            await db.execute(
+                "ALTER TABLE active_tickets ADD COLUMN pirate_evidence TEXT"
+            )
+            await db.commit()
+
+        # Миграция stats: колонка pirate_count (совокупный счётчик пойманных пиратов)
+        async with db.execute("PRAGMA table_info(stats)") as cur:
+            stats_cols = [row[1] for row in await cur.fetchall()]
+        if "pirate_count" not in stats_cols:
+            await db.execute(
+                "ALTER TABLE stats ADD COLUMN pirate_count INTEGER DEFAULT 0"
             )
             await db.commit()
 
@@ -185,6 +208,50 @@ async def ticket_set_voice(channel_id: int, voice_channel_id: int) -> None:
             (voice_channel_id, channel_id),
         )
         await db.commit()
+
+
+async def ticket_set_steam_info(channel_id: int,
+                                is_pirate: bool,
+                                pirate_evidence: Optional[list] = None) -> None:
+    """Сохраняет результат детекта пиратки (Spacewar) для тикета.
+
+    Вызывается после Steam-проверки в tickets.py. Значения потом
+    читаются в build_control_embed / DM / log / restore / transcript,
+    чтобы пиратка была видна во всех панелях и заголовках.
+    """
+    import json as _json
+    evidence_json = _json.dumps(pirate_evidence or [], ensure_ascii=False)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE active_tickets SET is_pirate = ?, pirate_evidence = ? "
+            "WHERE channel_id = ?",
+            (1 if is_pirate else 0, evidence_json, channel_id),
+        )
+        await db.commit()
+
+
+def parse_pirate_info(ticket: Optional[dict]) -> tuple[bool, list[str]]:
+    """Достаёт (is_pirate, pirate_evidence) из dict'а тикета.
+
+    tier-1 хелпер: работает с None, отсутствующими ключами (старые тикеты),
+    кривым JSON и не-bool значениями. Возвращает (False, []) в любом
+    безопасном случае.
+    """
+    if not ticket:
+        return False, []
+    is_pirate = bool(ticket.get("is_pirate"))
+    raw = ticket.get("pirate_evidence")
+    if not raw:
+        return is_pirate, []
+    try:
+        import json as _json
+        evidence = _json.loads(raw)
+        if isinstance(evidence, list):
+            return is_pirate, [str(e) for e in evidence]
+        return is_pirate, [str(evidence)]
+    except (ValueError, TypeError):
+        # Если вдруг evidence хранится как plain text — возвращаем одной строкой
+        return is_pirate, [str(raw)] if raw else []
 
 
 async def ticket_set_status(channel_id: int, status: str,
@@ -335,12 +402,43 @@ async def stats_add_rating(recruiter_id: int, stars: int) -> None:
         await db.commit()
 
 
+async def stats_add_pirate(recruiter_id: int) -> None:
+    """Инкрементит счётчик пойманных пиратов у рекрутера.
+
+    Вызывается при закрытии тикета, где детектирована пиратка (Spacewar).
+    Потом используется в .stats для показа "🏴‍☠️ Пиратов поймано: N".
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO stats(recruiter_id, ticket_count, total_stars, ratings_count, "
+            "total_reaction_time, last_activity, pirate_count) "
+            "VALUES(?, 0, 0, 0, 0, ?, 1) "
+            "ON CONFLICT(recruiter_id) DO UPDATE SET "
+            "  pirate_count = pirate_count + 1, "
+            "  last_activity = ?",
+            (recruiter_id, int(time.time()), int(time.time())),
+        )
+        await db.commit()
+
+
+async def pirates_active_count() -> int:
+    """Сколько сейчас открытых тикетов с обнаруженной пираткой."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM active_tickets "
+            "WHERE is_pirate = 1 AND status = 'open'",
+        ) as cur:
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+
+
 async def stats_top(limit: int = 10) -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT recruiter_id, ticket_count, total_stars, ratings_count, "
-            "total_reaction_time, last_activity FROM stats "
+            "total_reaction_time, last_activity, "
+            "COALESCE(pirate_count, 0) AS pirate_count FROM stats "
             "WHERE ticket_count > 0 ORDER BY ticket_count DESC LIMIT ?",
             (limit,),
         ) as cur:

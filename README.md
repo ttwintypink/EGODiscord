@@ -188,7 +188,6 @@ Railway Volume (вкладка "Settings" → "Volumes") и поправьте `
 - `.editor` — **интерактивный дашборд** всех настроек бота (вопросы, текст панели, Steam-ключ, роли, каналы, пересоздание панели)
 - `.blacklist add <ID>` — добавить пользователя в чёрный список
 - `.blacklist remove <ID>` — удалить из чёрного списка
-- `.setup-voprosy` — быстро изменить вопросы анкеты (упрощённая версия `.editor`)
 
 ### Разработчика (скрытые, только для ID `1105559182624694393`)
 - `.setup` — установить панель тикетов в текущем канале
@@ -206,7 +205,7 @@ EGODiscord/
 ├── cogs/
 │   ├── tickets.py          # Создание тикетов, панели, модалы
 │   ├── ticket_control.py   # Кнопки управления, обзвон, закрытие
-│   ├── moderation.py       # blacklist, stats, setup-voprosy
+│   ├── moderation.py       # blacklist, stats
 │   ├── developer.py        # .call, .voice
 │   ├── editor.py           # .editor — интерактивный дашборд настроек
 │   └── help.py             # .help — премиальная справка с категориями

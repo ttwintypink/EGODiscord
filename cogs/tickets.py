@@ -609,6 +609,8 @@ class ApplicationModal(ui.Modal):
             claimer=None,
             voice_channel=None,
             steam_status="pending",
+            is_pirate=False,        # Пиратка ещё не проверена — обновится после Steam-скана
+            pirate_evidence=None,
         )
         control_view = TicketControlView(config)
 
@@ -989,8 +991,99 @@ class ApplicationModal(ui.Modal):
             except discord.HTTPException:
                 pass
 
+        # ── Сохраняем детект пиратки в БД — чтобы он был виден во ВСЕХ
+        #    панелях/заголовках/подзаголовках: control header, DM, log,
+        #    restore, transcript, .menu дашборд.
+        try:
+            await database.ticket_set_steam_info(
+                channel.id, is_pirate, pirate_evidence
+            )
+        except Exception as e:
+            log.warning("Не удалось сохранить pirate info в БД: %s", e)
+
+        # ── Обновляем шапку control-панели: теперь там видно статус пиратки.
+        try:
+            await self._refresh_control_panel(channel, steam_status="done",
+                                              is_pirate=is_pirate,
+                                              pirate_evidence=pirate_evidence)
+        except Exception as e:
+            log.warning("Не удалось обновить control-панель: %s", e)
+
         # ── АВТОНИК: меняем ник кандидата на "Steam Name | Real Name" ─────────
         await self._set_nickname(self.user, real_name, persona if persona != "—" else None)
+
+    async def _refresh_control_panel(self, channel: discord.TextChannel,
+                                     steam_status: str = "done",
+                                     is_pirate: bool = False,
+                                     pirate_evidence: Optional[list[str]] = None):
+        """Обновляет закреплённое сообщение управления тикетом после Steam-проверки.
+
+        Находит pinned-сообщение с footer'ом «EGODiscord System • Управление тикетом»,
+        перечитывает тикет из БД (чтобы получить актуальный status/claimer/voice),
+        и пересобирает embed с актуальной пираткой.
+        """
+        from cogs.ticket_control import build_control_embed
+
+        try:
+            pinned = await channel.pins()
+        except discord.HTTPException as e:
+            log.warning("Не удалось получить pinned-сообщения: %s", e)
+            return
+
+        control_msg = None
+        for msg in pinned:
+            if not msg.embeds:
+                continue
+            footer_text = ""
+            try:
+                footer_text = msg.embeds[0].footer.text or ""
+            except (AttributeError, IndexError):
+                pass
+            if "Управление тикетом" in footer_text:
+                control_msg = msg
+                break
+
+        if control_msg is None:
+            log.debug("control_msg не найден среди pinned в канале %s", channel.id)
+            return
+
+        ticket = await database.ticket_get(channel.id)
+        if ticket is None:
+            return
+
+        # Если пиратка не передана явно — берём из БД
+        if not is_pirate:
+            is_pirate, pirate_evidence = database.parse_pirate_info(ticket)
+
+        guild = channel.guild
+        claimer = None
+        if ticket.get("claimed_by"):
+            claimer = guild.get_member(ticket["claimed_by"])
+
+        voice_channel = None
+        if ticket.get("voice_channel_id"):
+            voice_channel = guild.get_channel(ticket["voice_channel_id"])
+
+        status = ticket.get("status") or "open"
+        # Если тикет уже принят/отклонён — Steam-статус не меняем
+        if status in ("accepted", "rejected"):
+            return
+
+        new_embed = build_control_embed(
+            user=self.user,
+            ticket_type=self.ticket_type,
+            status=status,
+            claimer=claimer,
+            voice_channel=voice_channel,
+            steam_status=steam_status,
+            is_pirate=is_pirate,
+            pirate_evidence=pirate_evidence,
+        )
+
+        try:
+            await control_msg.edit(embed=new_embed)
+        except discord.HTTPException as e:
+            log.warning("Не удалось отредактировать control_msg: %s", e)
 
     async def _set_nickname(self, member: discord.Member,
                             real_name: Optional[str],

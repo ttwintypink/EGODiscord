@@ -309,6 +309,32 @@ def _build_css() -> str:
         background: {CSS_COLORS['warning']};
         color: {CSS_COLORS['bg_deep']};
     }}
+    .badge-pirate {{
+        background: #E67E22;
+        color: #fff;
+    }}
+    /* Баннер пиратки в шапке транскрипта */
+    .pirate-banner {{
+        background: linear-gradient(135deg, #E67E22 0%, #D35400 100%);
+        color: #fff;
+        padding: 14px 28px;
+        border-bottom: 1px solid #C0392B;
+        font-size: 14px;
+        line-height: 1.5;
+    }}
+    .pirate-banner strong {{ font-weight: 700; }}
+    .pirate-banner .pirate-title {{
+        font-size: 16px;
+        font-weight: 700;
+        margin-bottom: 6px;
+    }}
+    .pirate-banner .pirate-evidence {{
+        margin-top: 8px;
+        padding-left: 18px;
+    }}
+    .pirate-banner .pirate-evidence li {{
+        margin: 3px 0;
+    }}
     """
 
 
@@ -322,16 +348,24 @@ def generate_html_transcript(
     created_at: datetime,
     closed_at: datetime | None = None,
     messages: Iterable[dict],
+    is_pirate: bool = False,
+    pirate_evidence: list[str] | None = None,
 ) -> str:
     """
     messages: итерируемый объект с dict-полями:
         author_name, author_id, content, created_at (str),
         avatar_url (str | None), role_color (str | None), bot (bool)
+
+    is_pirate: если True — в шапку транскрипта добавляется оранжевый
+        баннер с предупреждением о пиратке (Spacewar).
+    pirate_evidence: список строк-признаков пиратки.
     """
     closed_at = closed_at or now_msk()
     type_label = "Клан" if ticket_type == "clan" else "Модерация"
     badge_class = "badge-clan" if ticket_type == "clan" else "badge-mod"
     badge_html = f'<span class="badge {badge_class}">{_esc(type_label)}</span>'
+    if is_pirate:
+        badge_html += ' <span class="badge badge-pirate">🏴‍☠️ Пират (Spacewar)</span>'
 
     messages_list = list(messages)
     messages_html = []
@@ -351,6 +385,21 @@ def generate_html_transcript(
         else '<div class="empty">📭 Сообщений не найдено</div>'
     )
 
+    # Баннер пиратки — отдельный блок в шапке, заметный оранжевый.
+    pirate_banner_html = ""
+    if is_pirate:
+        evidence_items = ""
+        if pirate_evidence:
+            items = "".join(f"<li>{_esc(e)}</li>" for e in pirate_evidence[:5])
+            evidence_items = f'<ul class="pirate-evidence">{items}</ul>'
+        pirate_banner_html = f"""
+        <div class="pirate-banner">
+            <div class="pirate-title">🏴‍☠️ Обнаружена пиратская версия Rust!</div>
+            <div>Кандидат играет через <strong>Spacewar</strong> (тестовое приложение Steam, которое пираты используют для запуска Rust без лицензии).</div>
+            {evidence_items}
+        </div>
+        """
+
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -366,6 +415,7 @@ def generate_html_transcript(
         <div class="brand-sub">Ticket Transcript • {badge_html}</div>
     </div>
     <div class="transcript-container">
+        {pirate_banner_html}
         <div class="header">
             <h1>🎫 Транскрипт тикета — {_esc(channel_name)}</h1>
             <div class="subtitle">Полная история переписки из закрытого тикета</div>
